@@ -30,6 +30,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.channels.ClosedByInterruptException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -112,6 +113,7 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 
 
 	BioformatsImageServer(final ImageReader reader, final String path) throws FormatException, IOException, DependencyException, ServiceException {
+
 		super();
 
 		// Warning, because my interpretation of what Bio-Formats is doing may be wrong...
@@ -246,6 +248,7 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 			logger.debug(meta.getImageName(count) + ": Physical pixels x: " + meta.getPixelsPhysicalSizeX(count));
 		}
 		
+		Integer[] colorArray = null;
 		for (int i = 0; i < nResolutions; i++) {
 			
 			reader.setResolution(i);
@@ -262,20 +265,25 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 				tileWidth = reader.getOptimalTileWidth();
 				tileHeight = reader.getOptimalTileHeight();
 				nChannels = reader.getSizeC();
+				if (colorArray == null)
+					colorArray = new Integer[nChannels];
+				else if (nChannels > colorArray.length)
+					colorArray = Arrays.copyOf(colorArray, nChannels);
 				nZSlices = reader.getSizeZ();
 				nTimepoints = reader.getSizeT();
 				isRGB = reader.isRGB();
 				bpp = reader.getBitsPerPixel();
 				
 				// Try to read the default display colors for each channel from the file
-				channelColors.clear();
 				if (!isRGB) {
 					for (int c = 0; c < nChannels; c++) {
 						ome.xml.model.primitives.Color color = meta.getChannelColor(imageIndex, c);
 						if (color != null)
-							channelColors.add(ColorTools.makeRGBA(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha()));
-						else
-							channelColors.add(getExtendedDefaultChannelColor(c));
+							colorArray[c] = ColorTools.makeRGBA(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha());
+//						if (color != null)
+//							channelColors.add(ColorTools.makeRGBA(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha()));
+//						else
+//							channelColors.add(getExtendedDefaultChannelColor(c));
 					}
 				}
 				
@@ -356,7 +364,7 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 		if (tileHeight < 32 && tileHeight > 4096)
 			tileHeight = -1;
 		
-		
+		// Set metadata
 		ImageServerMetadata.Builder builder = new ImageServerMetadata.Builder(this.path, width, height).
 				setSizeC(nChannels).
 				setSizeZ(nZSlices).
@@ -367,8 +375,18 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 				setTimeUnit(timeUnit);
 		if (tileWidth > 0 && tileHeight > 0)
 			builder.setPreferredTileSize(tileWidth, tileHeight);
-		
 		originalMetadata = builder.build();
+		
+		// Set channel colors - need to wait until after metadata has been set to avoid NPE
+		channelColors.clear();
+		if (!isRGB) {
+			for (int c = 0; c < nChannels; c++) {
+				if (colorArray[c] == null)
+					channelColors.add(getExtendedDefaultChannelColor(c));
+				else
+					channelColors.add(colorArray[c]);
+			}
+		}
 		
 		// Bioformats can use ImageIO for JPEG decoding, and permitting the disk-based cache can slow it down... so here we turn it off
 		// TODO: Document - or improve - the setting of ImageIO disk cache
