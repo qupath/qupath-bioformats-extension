@@ -24,9 +24,9 @@
 package qupath.lib.images.servers;
 
 import java.awt.Graphics2D;
-import java.awt.Image;
 import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
+import java.awt.image.WritableRaster;
 import java.io.File;
 import java.io.IOException;
 import java.nio.channels.ClosedByInterruptException;
@@ -538,14 +538,14 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 				return AWTImageTools.mergeChannels(images);
 
 			} catch (Exception e) {
-				e.printStackTrace();
+				logger.error("Error reading image region", e);
 			}
 		}
 		return null;
 	}
 	
 	/**
-	 * Resize the image to have the requested width/height
+	 * Resize the image to have the requested width/height.
 	 * 
 	 * @param img
 	 * @param finalWidth
@@ -560,11 +560,38 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 			g2d.dispose();
 			return img2;
 		}
-		// TODO: Warning!  This doesn't actually work!  It performs some unwelcome rescaling of pixel intensities
-		logger.warn("Resizing not implemented properly for images with type {} - pixel values will be surreptitiously rescaled", img.getType());
-		return AWTImageTools.scale(img, finalWidth, finalHeight, false);
-//		logger.warn("Resizing not implemented for images with type {} - image will be returned at the original size!", img.getType());
-//		return img;
+		
+		// Get the pixels
+		float[] pixels = AWTImageTools.getFloats(img)[0];
+		double xScale = (double)img.getWidth() / finalWidth;
+		double yScale = (double)img.getHeight() / finalHeight;
+		
+		// Perform rescaling with nearest neighbor interpolation
+		// TODO: Consider 'better' forms of interpolation
+		float[] pixelsNew = new float[finalWidth*finalHeight];
+		int w = img.getWidth();
+		int h = img.getHeight();
+		for (int y = 0; y < finalHeight; y++) {
+			int row = (int)(y * yScale + 0.5);
+			if (row >= h)
+				row = h-1;
+			for (int x = 0; x < finalWidth; x++) {
+				int col = (int)(x * xScale + 0.5);
+				if (col >= w)
+					col = w-1;
+				int ind = row*img.getWidth() + col;
+				pixelsNew[y*finalWidth + x] = pixels[ind];
+			}			
+		}
+		
+		// Create an image with the same ColorModel / data type as the original
+		WritableRaster raster = img.getColorModel().createCompatibleWritableRaster(finalWidth, finalHeight);
+		raster.setSamples(0, 0, finalWidth, finalHeight, 0, pixelsNew);
+		return new BufferedImage(img.getColorModel(), raster, true, null);
+		
+//		// Warning!  This doesn't actually work!  It performs some unwelcome rescaling of pixel intensities
+//		logger.warn("Resizing not implemented properly for images with type {} - pixel values will be surreptitiously rescaled", img.getType());
+//		return AWTImageTools.scale(img, finalWidth, finalHeight, false);
 	}
 	
 	
