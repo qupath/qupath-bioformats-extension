@@ -24,6 +24,7 @@
 package qupath.lib.images.servers;
 
 import java.awt.Graphics2D;
+import java.awt.Image;
 import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 import java.io.File;
@@ -517,17 +518,8 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 				img = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
 				
 				// Resize if we need to
-				if (resizeRequired) {
-					if (ipReader.isRGB()) {
-						BufferedImage img2 = new BufferedImage(finalWidth, finalHeight, BufferedImage.TYPE_INT_RGB);
-						Graphics2D g2d = img2.createGraphics();
-						g2d.drawImage(img, 0, 0, finalWidth, finalHeight, null);
-						g2d.dispose();
-						img = img2;
-					} else
-						img = AWTImageTools.scale(img, finalWidth, finalHeight, false);
-				}
-//					img = resize(img, finalWidth, finalHeight, downsampleFactor, downsampleForSeries);
+				if (resizeRequired)
+					img = resize(img, finalWidth, finalHeight, isRGB);						
 
 				// Single-channel & RGB images are straightforward... nothing more to do
 				if (ipReader.isRGB() || nChannels() == 1)
@@ -540,8 +532,7 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 					ind = ipReader.getIndex(request.getZ(), c, request.getT());
 					img = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
 					if (resizeRequired)
-						img = AWTImageTools.scale(img, finalWidth, finalHeight, false);
-//						img = resize(img, finalWidth, finalHeight, downsampleFactor, downsampleForSeries);
+						img = resize(img, finalWidth, finalHeight, isRGB);
 					images[c] = img;
 				}
 				return AWTImageTools.mergeChannels(images);
@@ -551,6 +542,29 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 			}
 		}
 		return null;
+	}
+	
+	/**
+	 * Resize the image to have the requested width/height
+	 * 
+	 * @param img
+	 * @param finalWidth
+	 * @param finalHeight
+	 * @return
+	 */
+	private BufferedImage resize(final BufferedImage img, final int finalWidth, final int finalHeight, final boolean isRGB) {
+		if (isRGB || img.getType() == BufferedImage.TYPE_BYTE_GRAY) {
+			BufferedImage img2 = new BufferedImage(finalWidth, finalHeight, BufferedImage.TYPE_INT_RGB);
+			Graphics2D g2d = img2.createGraphics();
+			g2d.drawImage(img, 0, 0, finalWidth, finalHeight, null);
+			g2d.dispose();
+			return img2;
+		}
+		// TODO: Warning!  This doesn't actually work!  It performs some unwelcome rescaling of pixel intensities
+		logger.warn("Resizing not implemented properly for images with type {} - pixel values will be surreptitiously rescaled", img.getType());
+		return AWTImageTools.scale(img, finalWidth, finalHeight, false);
+//		logger.warn("Resizing not implemented for images with type {} - image will be returned at the original size!", img.getType());
+//		return img;
 	}
 	
 	
