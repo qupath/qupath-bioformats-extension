@@ -1,3 +1,8 @@
+## Version 0.0.3
+
+* Fixed bug when resizing image regions
+
+
 ## Version 0.0.2
 
 * Fixed bugs that prevented reading non-RGB whole slide images

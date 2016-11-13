@@ -425,12 +425,19 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 				ifReader.setId(filePath);
 				map.put(Thread.currentThread(), ifReader);
 			} catch (ClosedByInterruptException e) {
+				logger.error(e.getLocalizedMessage());
 			} catch (Exception e) {
-				e.printStackTrace();
+				logger.error(e.getLocalizedMessage());
+//				e.printStackTrace();
 			}
 		}
 		try {
 			// Make sure the ID is set
+			if (ifReader == null) {
+				ifReader = new ImageReader();
+				ifReader.setFlattenedResolutions(false);
+				ifReader.setId(filePath);
+			}
 			if (ifReader.getCurrentFile() == null)
 				ifReader.setId(filePath);			
 		} catch (Exception e) {
@@ -587,7 +594,7 @@ public class BioformatsImageServer extends AbstractImageServer<BufferedImage> {
 		// Create an image with the same ColorModel / data type as the original
 		WritableRaster raster = img.getColorModel().createCompatibleWritableRaster(finalWidth, finalHeight);
 		raster.setSamples(0, 0, finalWidth, finalHeight, 0, pixelsNew);
-		return new BufferedImage(img.getColorModel(), raster, true, null);
+		return new BufferedImage(img.getColorModel(), raster, img.getColorModel().isAlphaPremultiplied(), null);
 		
 //		// Warning!  This doesn't actually work!  It performs some unwelcome rescaling of pixel intensities
 //		logger.warn("Resizing not implemented properly for images with type {} - pixel values will be surreptitiously rescaled", img.getType());
