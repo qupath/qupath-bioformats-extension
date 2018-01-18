@@ -29,14 +29,16 @@ import java.awt.image.BufferedImage;
 import java.awt.image.WritableRaster;
 import java.io.File;
 import java.io.IOException;
-import java.nio.channels.ClosedByInterruptException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.WeakHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -75,6 +77,8 @@ import qupath.lib.regions.RegionRequest;
  * 
  * See http://www.openmicroscopy.org/site/products/bio-formats
  * 
+ * See also https://docs.openmicroscopy.org/bio-formats/5.7.2/developers/matlab-dev.html#improving-reading-performance
+ * 
  * @author Pete Bankhead
  *
  */
@@ -82,11 +86,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	
 	private static final Logger logger = LoggerFactory.getLogger(BioFormatsImageServer.class);
 	
-	/**
-	 * In the event that we're using multithreading, store multiple readers.
-	 */
-	private Map<Thread, IFormatReader> map = new WeakHashMap<>();
-		
 	/**
 	 * Image names (in lower case) normally associated with 'extra' images, but probably not representing the main image in the file.
 	 */
@@ -111,11 +110,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	 * Path to the base image file - will be the same as path, unless the path encodes the name of a specific series, in which case this refers to the file without the series included
 	 */
 	private String filePath;
-	
-	/**
-	 * The main image reader from which to request pixels.
-	 */
-	private BufferedImageReader reader;
 	
 	/**
 	 * Preferred downsample values, representing each level of an image pyramid.
@@ -172,7 +166,13 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	 * Size of any memoization file, in bytes.
 	 * This is useful in any heuristic aiming to turn of parallel reading for especially heavyweight image readers.
 	 */
-	private long memoizationFileSize = -1L;
+	private static long memoizationFileSize = -1L;
+	
+	/**
+	 * Manager to help keep multithreading under control.
+	 */
+	private static BioFormatsReaderManager manager = new BioFormatsReaderManager();
+	
 	
 	/**
 	 * Create an ImageServer using the Bio-Formats library for a specified image path.
@@ -187,7 +187,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		this(path, BioFormatsServerOptions.getInstance());
 	}
 	
-	private static Map<String, BufferedImageReader> cachedReaders = new HashMap<>();
 
 	BioFormatsImageServer(final String path, final BioFormatsServerOptions options) throws FormatException, IOException, DependencyException, ServiceException {
 		super();
@@ -220,30 +219,16 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		
 		this.path = path;
 		
-		// We'll need to get the metadata to parse pixel sizes etc.
-	    IMetadata meta = null;
-
-	    // Create a reader if we need to
-		this.reader = cachedReaders.get(filePath);
-		if (this.reader == null) {
-			// Create OME-XML metadata store
-		    ServiceFactory factory = new ServiceFactory();
-		    OMEXMLService service = factory.getInstance(OMEXMLService.class);
-		    meta = service.createOMEXMLMetadata();
-			this.reader = createReader(null, filePath, meta);
-		    cachedReaders.put(filePath, this.reader);
-		} else {
-			this.reader.setId(filePath);	
-			meta = (IMetadata)this.reader.getMetadataStore();
-			this.reader.setSeries(0);
-		}
+	    // Create a reader & extract the metadata
+		BufferedImageReader reader = manager.getPrimaryReader(this, filePath);
+		IMetadata meta = (IMetadata)reader.getMetadataStore();
 		
 		synchronized(reader) {
-		
+			
 			// Populate the image server list if we have more than one image
 			int seriesIndex = -1;
 			
-			if (this.reader.getSeriesCount() > 1) {
+			if (reader.getSeriesCount() > 1) {
 				imageMap = new LinkedHashMap<>(reader.getSeriesCount());
 				associatedImageMap = new LinkedHashMap<>(reader.getSeriesCount());
 				if (reader.getSeriesCount() != meta.getImageCount())
@@ -497,73 +482,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		logger.debug(String.format("Initialization time: %d ms", endTime-startTime));
 	}
 
-	/**
-	 * Create a new BufferedImageReader, with memoization if necessary.
-	 * 
-	 * @param id File path for the image.
-	 * @param store Optional MetadataStore; this will be set in the reader if needed.
-	 * @return the BufferedImageReader
-	 * @throws FormatException
-	 * @throws IOException
-	 */
-	private BufferedImageReader createReader(final String id, final MetadataStore store) throws FormatException, IOException {
-		return createReader(null, id, store);
-	}
-	
-	/**
-	 * Create a new BufferedImageReader, with memoization if necessary.
-	 * 
-	 * @param cls Optionally specify a IFormatReader class if it is already known, to avoid a search.
-	 * @param id File path for the image.
-	 * @param store Optional MetadataStore; this will be set in the reader if needed.
-	 * @return the BufferedImageReader
-	 * @throws FormatException
-	 * @throws IOException
-	 */
-	private BufferedImageReader createReader(final Class<? extends IFormatReader> cls, final String id, final MetadataStore store) throws FormatException, IOException {
-		IFormatReader imageReader;
-		if (cls != null) {
-			ClassList<IFormatReader> list = new ClassList<>(IFormatReader.class);
-			list.addClass(reader.getReader().getClass());
-			imageReader = new ImageReader(list);
-		} else
-			imageReader = new ImageReader();
-		
-		imageReader.setFlattenedResolutions(false);
-		
-		Memoizer memoizer = null;
-		if (options.requestMemoization()) {
-			String pathMemoization = options.getPathMemoization();
-			long memoizationMinTimeMillis = 100L;
-			if (pathMemoization != null && !pathMemoization.trim().isEmpty()) {
-				File dir = new File(pathMemoization);
-				if (dir.isDirectory())
-					memoizer = new Memoizer(imageReader, memoizationMinTimeMillis, dir);
-				else {
-					logger.warn("Memoization directory '{}' not found - will default to image directory", pathMemoization);
-					memoizer = new Memoizer(imageReader, memoizationMinTimeMillis);
-				}
-			} else
-				memoizer = new Memoizer(imageReader, memoizationMinTimeMillis);
-			imageReader = memoizer;
-		}
-		
-		if (store != null)
-			imageReader.setMetadataStore(store);
-		
-		if (id != null) {
-			imageReader.setId(id);
-			if (memoizer != null) {
-				File fileMemo = ((Memoizer)imageReader).getMemoFile(filePath);
-				memoizationFileSize = fileMemo == null ? 0L : fileMemo.length();
-				if (memoizationFileSize == 0L)
-					logger.debug("No memoization file generated for {}", id);
-				else
-					logger.debug(String.format("Generating memoization file %s (%.2f MB)", fileMemo.getAbsolutePath(), memoizationFileSize/1024.0/1024.0));			
-			}
-		}
-		return BufferedImageReader.makeBufferedImageReader(imageReader);
-	}
 	
 		
 	/**
@@ -579,39 +497,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		return options.requestParallelization() && getWidth() > 8192 && getHeight() > 8192 && memoizationFileSize < 1024L*1024L * 10L;
 	}
 	
-	/**
-	 * Get an IFormatReader for the current thread, storing the result in a map if needed.
-	 * 
-	 * @return
-	 */
-	private IFormatReader getCurrentThreadImageReader() {
-		// Here, to avoid requiring synchronization and to avoid trouble with the reader state,
-		// we create readers for each thread
-		// This doesn't appear to be too expensive if memoization is turned on, and the readers are sufficiently lightweight.
-		// See https://docs.openmicroscopy.org/bio-formats/5.7.2/developers/matlab-dev.html#improving-reading-performance
-		IFormatReader ifReader = map.get(Thread.currentThread());
-		if (ifReader == null) {
-			try {
-				ifReader = createReader(reader.getReader().getClass(), filePath, null);
-				map.put(Thread.currentThread(), ifReader);
-			} catch (ClosedByInterruptException e) {
-				logger.error(e.getLocalizedMessage());
-			} catch (Exception e) {
-				logger.error(e.getLocalizedMessage());
-			}
-		}
-		try {
-			// Make extra sure the ID is set
-			if (ifReader == null) {
-				ifReader = createReader(filePath, null);
-			}
-			if (ifReader.getCurrentFile() == null)
-				ifReader.setId(filePath);			
-		} catch (Exception e) {
-			logger.error("Problem getting an image reader", e);
-		}
-		return ifReader;
-	}
 	
 	/**
 	 * Get a BufferedImageReader for use by the current thread.
@@ -619,10 +504,19 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	 * If willParallelize() returns false, then the global reader will be provided.
 	 * 
 	 * @return
+	 * @throws IOException 
+	 * @throws FormatException 
+	 * @throws ServiceException 
+	 * @throws DependencyException 
 	 */
 	private BufferedImageReader getBufferedImageReader() {
-		IFormatReader ifReader = willParallelize() ? getCurrentThreadImageReader() : reader;
-		return BufferedImageReader.makeBufferedImageReader(ifReader);
+		try {
+			IFormatReader ifReader = willParallelize() ? manager.getReaderForThread(this, filePath) : manager.getPrimaryReader(this, filePath);
+			return BufferedImageReader.makeBufferedImageReader(ifReader);
+		} catch (Exception e) {
+			logger.error("Error requesting image reader", e);
+			return null;
+		}
 	}
 	
 	
@@ -668,10 +562,12 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		BufferedImage img;
 		
 		BufferedImageReader ipReader = getBufferedImageReader();
+		if (ipReader == null) {
+			logger.warn("Reader is null - was the image already closed? " + filePath);
+			return null;
+		}
 		synchronized(ipReader) {
 			try {
-				if (ipReader.getCurrentFile() == null)
-					ipReader.setId(filePath);
 				ipReader.setSeries(series);
 				ipReader.setResolution(resolution);
 				
@@ -799,23 +695,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	@Override
 	public synchronized void close() {
 		super.close();
-//		if (reader != null) {
-//			try {
-//				reader.close();
-//			} catch (IOException e) {
-//				e.printStackTrace();
-//			}
-//		}
-
-		for (IFormatReader reader : map.values()) {
-			if (reader != null) {
-				try {
-					reader.close();
-				} catch (IOException e) {
-					e.printStackTrace();
-				}
-			}
-		}
+		manager.closeServer(this);
 	}
 	
 	@Override
@@ -941,5 +821,241 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			throw new RuntimeException("Specified metadata is incompatible with original metadata for " + this);
 		userMetadata = metadata;
 	}
+	
+	
+	
+	/**
+	 * Helper class to manage multiple Bio-Formats image readers.
+	 * 
+	 * This has two purposes:
+	 *  1. To allow BioFormatsImageServers reading from the same image to request pixels from the same BioFormats reader
+	 *  2. To allow BioFormatsImageServers to request separate Bio-Formats image readers for different threads.
+	 *  
+	 * These are to address somewhat conflicting challenges.  Firstly, some readers are very memory-hungry, and 
+	 * should be created as rarely as possible.  On the other side, some readers are very lightweight - and having multiple 
+	 * such readers active at a time can help rapidly respond to tile requests.
+	 * 
+	 * It's up to any consumers to ensure that heavyweight readers aren't called for each thread.
+	 */
+	static class BioFormatsReaderManager {
+		
+		/**
+		 * Map of primary readers, not associated with any thread but with metadata available.
+		 */
+		private Map<String, BufferedImageReader> mapPrimary = new HashMap<>();
+		
+		/**
+		 * Map of reads for each calling thread.  Care should be taking by the calling code to ensure requests are only made for 'lightweight' readers to avoid memory problems.
+		 */
+		private Map<Thread, BufferedImageReader> mapReadersPerThread = new WeakHashMap<>();
+		
+		/**
+		 * Map between active BioFormatsImageServers and Strings representing the file paths to the images involved.
+		 */
+		public Map<BioFormatsImageServer, String> activeServers = new WeakHashMap<>();
+		
+		/**
+		 * Request a BufferedImageReader for a specified path that is unique for the calling thread.
+		 * 
+		 * Note that the state of the reader is not specified; setSeries should be called before use.
+		 * 
+		 * @param server
+		 * @param path
+		 * @return
+		 * @throws DependencyException
+		 * @throws ServiceException
+		 * @throws FormatException
+		 * @throws IOException
+		 */
+		public synchronized BufferedImageReader getReaderForThread(final BioFormatsImageServer server, final String path) throws DependencyException, ServiceException, FormatException, IOException {
+			BufferedImageReader reader = mapReadersPerThread.get(Thread.currentThread());
+			if (reader != null) {
+				if (!path.equals(reader.getCurrentFile())) {
+					if (reader.getCurrentFile() != null)
+						reader.close();
+					reader.setId(path);
+				}
+				return reader;
+			}
+			BufferedImageReader primaryReader = getPrimaryReader(server, path);
+			reader = createReader(server.options, primaryReader.getReader().getClass(), path, null);
+			mapReadersPerThread.put(Thread.currentThread(), reader);
+			return reader;
+		}
+		
+		/**
+		 * Request a BufferedImageReader for the specified path.
+		 * This reader will have metadata in an accessible form, but will *not* be unique for the calling thread.
+		 * Therefore care needs to be taken with regard to synchronization.
+		 * 
+		 * Note that the state of the reader is not specified; setSeries should be called before use.
+		 * 
+		 * @param server
+		 * @param path
+		 * @return
+		 * @throws DependencyException
+		 * @throws ServiceException
+		 * @throws FormatException
+		 * @throws IOException
+		 */
+		public synchronized BufferedImageReader getPrimaryReader(final BioFormatsImageServer server, final String path) throws DependencyException, ServiceException, FormatException, IOException {
+			// Record that we now have an active server
+			activeServers.put(server, path);
+			// Try to reuse an existing reader
+			BufferedImageReader reader = mapPrimary.get(path);
+			// Create a reader if we need to
+			if (reader == null) {
+				// Create OME-XML metadata store
+			    ServiceFactory factory = new ServiceFactory();
+			    OMEXMLService service = factory.getInstance(OMEXMLService.class);
+			    IMetadata meta = service.createOMEXMLMetadata();
+				reader = createReader(server.options, path, meta);
+				mapPrimary.put(path, reader);
+			} else {
+				// Make sure the ID is set
+				if (!path.equals(reader.getCurrentFile())) {
+					if (reader.getCurrentFile() != null)
+						reader.close(); // Shouldn't happen...
+					reader.setId(path);
+				}
+			}
+			return reader;
+		}
+		
+		/**
+		 * Explicitly register that a server has been closed.
+		 * 
+		 * This prompts a refresh of the primary server map, during which unused readers are closed.
+		 * 
+		 * @param server
+		 */
+		public synchronized void closeServer(final BioFormatsImageServer server) {
+			// Remove the active server
+			activeServers.remove(server);
+			// If this is the last active server we have for a specified path, then close all related readers
+			refreshPrimaryServerMap();
+		}
+		
+		/**
+		 * Check which servers are still active, and close any readers not associated with an active server.
+		 */
+		void refreshPrimaryServerMap() {
+			Collection<String> active = activeServers.values();
+			Iterator<Entry<String, BufferedImageReader>> iterator = mapPrimary.entrySet().iterator();
+			while (iterator.hasNext()) {
+				if (!active.contains(iterator.next().getKey()))
+					iterator.remove();
+			}
+		}
+		
+		/**
+		 * Close all the readers that we have.
+		 */
+		public void shutdown() {
+			closePrimaryReaders();
+			closeReadersPerThread();
+		}
+		
+		/**
+		 * Close all the primary readers.
+		 */
+		public synchronized void closePrimaryReaders() {
+			for (BufferedImageReader reader : mapPrimary.values()) {
+				try {
+					reader.close();
+				} catch (IOException e) {
+					logger.warn("Error closing image reader", e);
+				}
+			}
+			mapPrimary.clear();
+		}
+		
+		/**
+		 * Close all the pre-thread readers.
+		 */
+		public synchronized void closeReadersPerThread() {
+			for (BufferedImageReader reader : mapReadersPerThread.values()) {
+				try {
+					reader.close();
+				} catch (IOException e) {
+					logger.warn("Error closing image reader", e);
+				}
+			}
+			mapReadersPerThread.clear();
+		}
+		
+		
+		/**
+		 * Create a new BufferedImageReader, with memoization if necessary.
+		 * 
+		 * @param id File path for the image.
+		 * @param store Optional MetadataStore; this will be set in the reader if needed.
+		 * @return the BufferedImageReader
+		 * @throws FormatException
+		 * @throws IOException
+		 */
+		private BufferedImageReader createReader(final BioFormatsServerOptions options, final String id, final MetadataStore store) throws FormatException, IOException {
+			return createReader(options, null, id, store);
+		}
+		
+		/**
+		 * Create a new BufferedImageReader, with memoization if necessary.
+		 * 
+		 * @param cls Optionally specify a IFormatReader class if it is already known, to avoid a search.
+		 * @param id File path for the image.
+		 * @param store Optional MetadataStore; this will be set in the reader if needed.
+		 * @return the BufferedImageReader
+		 * @throws FormatException
+		 * @throws IOException
+		 */
+		private BufferedImageReader createReader(final BioFormatsServerOptions options, final Class<? extends IFormatReader> cls, final String id, final MetadataStore store) throws FormatException, IOException {
+			IFormatReader imageReader;
+			if (cls != null) {
+				ClassList<IFormatReader> list = new ClassList<>(IFormatReader.class);
+				list.addClass(cls);
+				imageReader = new ImageReader(list);
+			} else
+				imageReader = new ImageReader();
+			
+			imageReader.setFlattenedResolutions(false);
+			
+			Memoizer memoizer = null;
+			if (options.requestMemoization()) {
+				String pathMemoization = options.getPathMemoization();
+				long memoizationMinTimeMillis = 100L;
+				if (pathMemoization != null && !pathMemoization.trim().isEmpty()) {
+					File dir = new File(pathMemoization);
+					if (dir.isDirectory())
+						memoizer = new Memoizer(imageReader, memoizationMinTimeMillis, dir);
+					else {
+						logger.warn("Memoization directory '{}' not found - will default to image directory", pathMemoization);
+						memoizer = new Memoizer(imageReader, memoizationMinTimeMillis);
+					}
+				} else
+					memoizer = new Memoizer(imageReader, memoizationMinTimeMillis);
+				imageReader = memoizer;
+			}
+			
+			if (store != null)
+				imageReader.setMetadataStore(store);
+			
+			if (id != null) {
+				imageReader.setId(id);
+				if (memoizer != null) {
+					File fileMemo = ((Memoizer)imageReader).getMemoFile(id);
+					memoizationFileSize = fileMemo == null ? 0L : fileMemo.length();
+					if (memoizationFileSize == 0L)
+						logger.info("No memoization file generated for {}", id);
+					else
+						logger.info(String.format("Generating memoization file %s (%.2f MB)", fileMemo.getAbsolutePath(), memoizationFileSize/1024.0/1024.0));			
+				}
+			}
+			return BufferedImageReader.makeBufferedImageReader(imageReader);
+		}
+		
+		
+	}
+	
+	
 	
 }
