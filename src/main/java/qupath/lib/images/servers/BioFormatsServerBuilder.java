@@ -27,6 +27,7 @@ import java.awt.image.BufferedImage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import qupath.lib.images.servers.BioFormatsServerOptions.UseBioformats;
 import qupath.lib.images.servers.FileFormatInfo.ImageCheckType;
 
 /**
@@ -38,11 +39,11 @@ import qupath.lib.images.servers.FileFormatInfo.ImageCheckType;
 public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage> {
 	
 	final private static Logger logger = LoggerFactory.getLogger(BioFormatsServerBuilder.class);
-
+	
 	@Override
 	public ImageServer<BufferedImage> buildServer(String path) {
 		try {
-			return new BioformatsImageServer(path);
+			return new BioFormatsImageServer(path);
 		} catch (Exception e) {
 			logger.error("Unable to open {}", path, e);
 		}
@@ -51,8 +52,21 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 
 	@Override
 	public float supportLevel(String path, ImageCheckType type, Class<?> cls) {
+		// We only support BufferedImages
 		if (cls != BufferedImage.class)
 			return 0;
+		
+		// Check the options to see whether we really really do or don't want to read this
+		BioFormatsServerOptions options = BioFormatsServerOptions.getInstance();
+		switch (checkPath(options, path)) {
+			case YES:
+				return 5;
+			case NO:
+				return 0;
+			default:
+		}
+		
+		// Default to our normal checks
 		switch (type) {
 		case TIFF_2D_RGB:
 			return 3;
@@ -77,6 +91,33 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 	@Override
 	public String getDescription() {
 		return "Image server using the Bio-Formats library";
+	}
+	
+	
+	/**
+	 * Check whether Bio-Formats definitely should/shouldn't be used to try opening an image, 
+	 * based upon its path and the supplied BioFormatsServerOptions.
+	 * 
+	 * @param options
+	 * @param path
+	 * @return
+	 */
+	static UseBioformats checkPath(final BioFormatsServerOptions options, final String path) {
+		if (!options.bioformatsEnabled())
+			return UseBioformats.NO;
+		// Check if the file extension is one that we've been explicitly told to skip
+		String pathLower = path.toLowerCase();
+		for (String ext : options.getSkipAlwaysExtensions()) {
+			if (pathLower.endsWith(ext.toLowerCase()))
+				return UseBioformats.NO;
+		}
+		// Check if the file extension is one that we've been explicitly told to include
+		for (String ext : options.getUseAlwaysExtensions()) {
+			if (pathLower.endsWith(ext.toLowerCase()))
+				return UseBioformats.YES;
+		}
+		// If we get here, it could go either way... need to check support for format
+		return UseBioformats.MAYBE;
 	}
 	
 }
