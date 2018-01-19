@@ -11,7 +11,7 @@ This not only has the advantage of providing support for a wider range of images
 First, you will need to download two JAR files:
 
 1. The **Bio-Formats Package** from [here](http://www.openmicroscopy.org/site/products/bio-formats/downloads)
-2. The **QuPath Bio-Formats Extension** from [here](https://github.com/petebankhead/qupath-bioformats-extension/releases/latest)
+2. The **QuPath Bio-Formats Extension** from [here](https://github.com/qupath/qupath-bioformats-extension/releases/latest)
 
 Then simply drag both of them onto the main QuPath window while QuPath is running.  If you have not previously installed any QuPath extensions, you will be prompted to select a directory to store them in (or just use the default).
 
