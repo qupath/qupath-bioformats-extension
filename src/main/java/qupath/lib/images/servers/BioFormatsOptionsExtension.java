@@ -29,6 +29,8 @@ import java.util.List;
 import java.util.StringTokenizer;
 
 import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.IntegerProperty;
+import javafx.beans.property.LongProperty;
 import javafx.beans.property.StringProperty;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.extensions.QuPathExtension;
@@ -50,7 +52,8 @@ public class BioFormatsOptionsExtension implements QuPathExtension {
 		// Create persistent properties
 		BooleanProperty enableBioformats = PathPrefs.createPersistentPreference("bfEnableBioformats", options.bioformatsEnabled());
 		BooleanProperty useParallelization = PathPrefs.createPersistentPreference("bfUseParallization", options.requestParallelization());
-		BooleanProperty useMemoization = PathPrefs.createPersistentPreference("bfUseMemoization", options.requestMemoization());
+		IntegerProperty memoizationTimeMillis = PathPrefs.createPersistentPreference("bfMemoizationTimeMS", options.getMemoizationTimeMillis());
+		BooleanProperty parallelizeMultichannel = PathPrefs.createPersistentPreference("bfParallelizeMultichannel", options.requestParallelizeMultichannel());
 		
 		StringProperty pathMemoization = PathPrefs.createPersistentPreference("bfPathMemoization", options.getPathMemoization());
 		StringProperty useExtensions = PathPrefs.createPersistentPreference("bfUseAlwaysExtensions", String.join(" ", options.getUseAlwaysExtensions()));
@@ -60,14 +63,16 @@ public class BioFormatsOptionsExtension implements QuPathExtension {
 		options.setPathMemoization(pathMemoization.get());
 		options.setBioformatsEnabled(enableBioformats.get());
 		options.setRequestParallelization(useParallelization.get());
-		options.setRequestMemoization(useMemoization.get());
+		options.setMemoizationTimeMillis(memoizationTimeMillis.get());
+		options.setRequestParallelizeMultichannel(parallelizeMultichannel.get());
 		fillCollectionWithTokens(useExtensions.get(), options.getUseAlwaysExtensions());
 		fillCollectionWithTokens(skipExtensions.get(), options.getSkipAlwaysExtensions());
 
 		// Listen for property changes
 		enableBioformats.addListener((v, o, n) -> options.setBioformatsEnabled(n));
 		useParallelization.addListener((v, o, n) -> options.setRequestParallelization(n));
-		useMemoization.addListener((v, o, n) -> options.setRequestMemoization(n));
+		memoizationTimeMillis.addListener((v, o, n) -> options.setMemoizationTimeMillis(n.intValue()));
+		parallelizeMultichannel.addListener((v, o, n) -> options.setRequestParallelizeMultichannel(n));
 		
 		pathMemoization.addListener((v, o, n) -> options.setPathMemoization(n));
 		useExtensions.addListener((v, o, n) -> fillCollectionWithTokens(n, options.getUseAlwaysExtensions()));
@@ -76,8 +81,10 @@ public class BioFormatsOptionsExtension implements QuPathExtension {
 		// Add preferences to QuPath GUI
 		PreferencePanel prefs = QuPathGUI.getInstance().getPreferencePanel();
 		prefs.addPropertyPreference(enableBioformats, Boolean.class, "Enable Bio-Formats", "Bio-Formats", "Allow QuPath to use Bio-Formats for image reading");
-		prefs.addPropertyPreference(useParallelization, Boolean.class, "Enable Bio-Formats parallelization", "Bio-Formats", "Enable reading image tiles in parallel when using Bio-Formats");
-		prefs.addPropertyPreference(useMemoization, Boolean.class, "Enable Bio-Formats memoization", "Bio-Formats", "Allow Bio-Formats to use memoization to improve performance when reopening large or complex images");
+		prefs.addPropertyPreference(useParallelization, Boolean.class, "Enable Bio-Formats tile parallelization", "Bio-Formats", "Enable reading image tiles in parallel when using Bio-Formats");
+		prefs.addPropertyPreference(parallelizeMultichannel, Boolean.class, "Enable Bio-Formats channel parallelization (experimental)", "Bio-Formats", "Request multiple image channels in parallel, even if parallelization of tiles is turned off - "
+				+ "only relevant for multichannel images, and may fail for some image formats");
+		prefs.addPropertyPreference(memoizationTimeMillis, Integer.class, "Bio-Formats memoization time (ms)", "Bio-Formats", "Specify how long a file requires to open before Bio-Formats will create a .bfmemo file to improve performance (set < 0 to never use memoization)");
 		
 		prefs.addDirectoryPropertyPreference(pathMemoization, "Bio-Formats memoization directory", "Bio-Formats",
 				"Choose directory where Bio-Formats should write cache files for memoization; by default the directory where the image is stored will be used");

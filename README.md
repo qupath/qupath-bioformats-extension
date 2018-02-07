@@ -15,9 +15,18 @@ First, you will need to download two JAR files:
 
 Then simply drag both of them onto the main QuPath window while QuPath is running.  If you have not previously installed any QuPath extensions, you will be prompted to select a directory to store them in (or just use the default).
 
+> If you have older versions that can't be overwritten after dragging the .jar files onto QuPath, you can open your QuPath's extensions directory in Explorer/Finder and copy the files in manually there.
+
+
+## Performance
+
+Starting with v0.0.4, options have been added to QuPath preference panel that can help improve the performance when reading complex images.
+
+It is **highly recommended** to check these out.  More details are available by hovering the cursor over the options, or on [Google Groups](https://groups.google.com/d/msg/qupath-users/78PpZuu2J1s/su6ZjY0mAgAJ).
+
 
 ## Source code
 
-You should find the source code for the **QuPath Bio-Formats Extension** along with the extension download.
+You should find the source code for the **QuPath Bio-Formats Extension** alongside the extension download.
 
 The source code for Bio-Formats is at https://github.com/openmicroscopy/bioformats

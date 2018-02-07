@@ -26,6 +26,11 @@ package qupath.lib.images.servers;
 import java.awt.Graphics2D;
 import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
+import java.awt.image.ColorModel;
+import java.awt.image.DataBuffer;
+import java.awt.image.DataBufferByte;
+import java.awt.image.DataBufferUShort;
+import java.awt.image.Raster;
 import java.awt.image.WritableRaster;
 import java.io.File;
 import java.io.IOException;
@@ -41,6 +46,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.WeakHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import javax.imageio.ImageIO;
 
@@ -172,6 +178,11 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	 * Manager to help keep multithreading under control.
 	 */
 	private static BioFormatsReaderManager manager = new BioFormatsReaderManager();
+	
+	/**
+	 * Try to parallelize multichannel requests (experimental!)
+	 */
+	private boolean parallelizeMultichannel = true;
 	
 	
 	/**
@@ -478,6 +489,13 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		// TODO: Document - or improve - the setting of ImageIO disk cache
 		ImageIO.setUseCache(false);
 		
+		
+		// No need to parallelize for single-channel images
+		parallelizeMultichannel = options.requestParallelizeMultichannel();
+		if (nChannels() == 1 || isRGB())
+			parallelizeMultichannel = false;
+		
+		
 		long endTime = System.currentTimeMillis();
 		logger.debug(String.format("Initialization time: %d ms", endTime-startTime));
 	}
@@ -527,7 +545,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 
 	@Override
 	public BufferedImage readBufferedImage(RegionRequest request) {
-		
 		int resolution = ServerTools.getClosestDownsampleIndex(getPreferredDownsamples(), request.getDownsample());
 		double downsampleFactor = request.getDownsample();
 		double downsampleForSeries = getPreferredDownsamples()[resolution];
@@ -572,10 +589,12 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				ipReader.setResolution(resolution);
 				
 				// Ensure the region coordinates are within range
+				int x2 = region2.x + region2.width;
+				int y2 = region2.y + region2.height;
 				region2.x = region2.x < 0 ? 0 : region2.x;
 				region2.y = region2.y < 0 ? 0 : region2.y;
-				region2.width = region2.x + region2.width >= ipReader.getSizeX() ? ipReader.getSizeX() - region2.x : region2.width;
-				region2.height = region2.y + region2.height >= ipReader.getSizeY() ? ipReader.getSizeY() - region2.y : region2.height;
+				region2.width = x2 >= ipReader.getSizeX() ? ipReader.getSizeX() - region2.x : x2 - region2.x;
+				region2.height = y2 >= ipReader.getSizeY() ? ipReader.getSizeY() - region2.y : y2 - region2.y;
 				
 				// Determine the final required size - which may or may not be the same
 				int finalWidth, finalHeight;
@@ -590,29 +609,70 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					resizeRequired = true;
 				}
 
-				// Read the image - or at least the first channel
-				int ind = ipReader.getIndex(request.getZ(), 0, request.getT());
-				img = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
-				
-				// Resize if we need to
-				if (resizeRequired)
-					img = resize(img, finalWidth, finalHeight, isRGB);
-				
 				// Single-channel & RGB images are straightforward... nothing more to do
-				if (ipReader.isRGB() || nChannels() == 1)
-					return img;
-				
-				// If we have multiple channels, merge them
-				BufferedImage[] images = new BufferedImage[nChannels()];
-				images[0] = img;
-				for (int c = 1; c < nChannels(); c++) {
-					ind = ipReader.getIndex(request.getZ(), c, request.getT());
+				if (ipReader.isRGB() || nChannels() == 1) {
+					// Read the image - or at least the first channel
+					int ind = ipReader.getIndex(request.getZ(), 0, request.getT());
 					img = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
+					
+					// Resize if we need to
 					if (resizeRequired)
 						img = resize(img, finalWidth, finalHeight, isRGB);
-					images[c] = img;
+					return img;
 				}
-				return AWTImageTools.mergeChannels(images);
+				
+				// If we have multiple channels, merge them
+//				BufferedImage[] images = new BufferedImage[nChannels()];
+				
+				BufferedImage[] images = null;
+				int nChannels = nChannels();
+				// We can make an effort to read channels in parallel - but need to be cautious with some readers, and fall back to sequential
+				if (nChannels > 1 && parallelizeMultichannel && !willParallelize()) {
+					images = IntStream.range(0, nChannels).parallel().mapToObj(c -> {
+						logger.trace("Requesting to parallelize channel access");
+						int ind = ipReader.getIndex(request.getZ(), c, request.getT());
+						BufferedImage img2;
+						try {
+							img2 = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
+							if (resizeRequired)
+								img2 = resize(img2, finalWidth, finalHeight, isRGB);
+							return img2;
+						} catch (Exception e) {
+							logger.error("Exception reading " + request + " - turning off parallel channel reading", e);
+							parallelizeMultichannel = false;
+							return null;
+						}
+					}).toArray(n -> new BufferedImage[n]);
+				}
+				if (images == null)
+					images = new BufferedImage[nChannels];
+				for (int c = 0; c < nChannels; c++) {
+					// Check if we've already read the channel previously (i.e. in parallel)
+					if (images[c] != null)
+						continue;
+					// Read the region
+					int ind = ipReader.getIndex(request.getZ(), c, request.getT());
+					BufferedImage img2;
+					try {
+						img2 = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
+						if (resizeRequired)
+							img2 = resize(img2, finalWidth, finalHeight, isRGB);
+						images[c] = img2;
+					} catch (FormatException e) {
+						logger.error("Format exception reading " + request, e);
+					} catch (IOException e) {
+						logger.error("IOException exception reading " + request, e);
+					}
+				}
+				BufferedImage imgMerged;
+				if (images.length <= 4) {
+					// Can use the Bio-Formats merge - but seems limited to 4 channels
+					imgMerged = AWTImageTools.mergeChannels(images);
+				} else {
+					// Try our own merge - this makes no real effort with ColorModels, and supports only 8-bit and 16-bit unsigned
+					imgMerged = mergeChannels(images);
+				}
+				return imgMerged;
 
 			} catch (Exception e) {
 				logger.error("Error reading image region " + request + " for image size " + ipReader.getSizeX() + " x " + ipReader.getSizeY(), e);
@@ -620,6 +680,59 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		}
 		return null;
 	}
+	
+	
+	/**
+	 * Attempt to merge 8-bit and 16-bit unsigned integer images.
+	 * 
+	 * @param images
+	 * @return
+	 */
+	static BufferedImage mergeChannels(final BufferedImage images[]) {
+
+		BufferedImage imgFirst = images[0];
+		if (images.length == 1)
+			return imgFirst;
+
+		int w = imgFirst.getWidth();
+		int h = imgFirst.getHeight();
+		int type = imgFirst.getType();
+		
+		WritableRaster raster = null;
+		int[] bandIndices;
+		switch (type) {
+			case (BufferedImage.TYPE_BYTE_GRAY):
+				byte[][] bytes = new byte[images.length][];
+				bandIndices = new int[images.length];
+				for (int b = 0; b < images.length; b++) {
+					bandIndices[b] = b;
+					DataBuffer bandBuffer = images[b].getRaster().getDataBuffer();
+					if (!(bandBuffer instanceof DataBufferByte))
+						throw new IllegalArgumentException("Invalid DataBuffer - expected DataBufferByte, but got " + bandBuffer);
+					bytes[b] = ((DataBufferByte)bandBuffer).getData();
+				}
+				raster = WritableRaster.createBandedRaster(
+						new DataBufferByte(bytes, w*h),
+						w, h, w,bandIndices, new int[images.length], null);
+				return new BufferedImage(new DummyColorModel(8*images.length), raster, false, null);
+			case (BufferedImage.TYPE_USHORT_GRAY):
+				short[][] shorts = new short[images.length][];
+				bandIndices = new int[images.length];
+				for (int b = 0; b < images.length; b++) {
+					bandIndices[b] = b;
+					DataBuffer bandBuffer = images[b].getRaster().getDataBuffer();
+					if (!(bandBuffer instanceof DataBufferUShort))
+						throw new IllegalArgumentException("Invalid DataBuffer - expected DataBufferUShort, but got " + bandBuffer);
+					shorts[b] = ((DataBufferUShort)bandBuffer).getData();
+				}
+				raster = WritableRaster.createBandedRaster(
+						new DataBufferUShort(shorts, w*h), w, h, w,bandIndices, new int[images.length], null);
+				return new BufferedImage(new DummyColorModel(16*images.length), raster, false, null);
+			default:
+				throw new IllegalArgumentException("Only 8-bit or 16-bit unsigned integer images can be merged!");
+		}
+	}
+	
 	
 	/**
 	 * Resize the image to have the requested width/height.
@@ -1020,19 +1133,19 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			imageReader.setFlattenedResolutions(false);
 			
 			Memoizer memoizer = null;
-			if (options.requestMemoization()) {
+			int memoizationTimeMillis = options.getMemoizationTimeMillis();
+			if (memoizationTimeMillis >= 0) {
 				String pathMemoization = options.getPathMemoization();
-				long memoizationMinTimeMillis = 100L;
 				if (pathMemoization != null && !pathMemoization.trim().isEmpty()) {
 					File dir = new File(pathMemoization);
 					if (dir.isDirectory())
-						memoizer = new Memoizer(imageReader, memoizationMinTimeMillis, dir);
+						memoizer = new Memoizer(imageReader, memoizationTimeMillis, dir);
 					else {
 						logger.warn("Memoization directory '{}' not found - will default to image directory", pathMemoization);
-						memoizer = new Memoizer(imageReader, memoizationMinTimeMillis);
+						memoizer = new Memoizer(imageReader, memoizationTimeMillis);
 					}
 				} else
-					memoizer = new Memoizer(imageReader, memoizationMinTimeMillis);
+					memoizer = new Memoizer(imageReader, memoizationTimeMillis);
 				imageReader = memoizer;
 			}
 			
@@ -1055,6 +1168,53 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		
 		
 	}
+	
+	
+	
+	/**
+	 * An extremely tolerant ColorModel that assumes everything should be shown in black.
+	 * QuPath takes care of display elsewhere, so this is just needed to avoid any trouble with null pointer exceptions.
+	 */
+	static class DummyColorModel extends ColorModel {
+		
+		DummyColorModel(final int nBits) {
+			super(nBits);
+		}
+
+		@Override
+		public int getRed(int pixel) {
+			return 0;
+		}
+
+		@Override
+		public int getGreen(int pixel) {
+			return 0;
+		}
+
+		@Override
+		public int getBlue(int pixel) {
+			return 0;
+		}
+
+		@Override
+		public int getAlpha(int pixel) {
+			return 0;
+		}
+		
+		@Override
+		public boolean isCompatibleRaster(Raster raster) {
+			// We accept everything...
+			return true;
+		}
+		
+		@Override
+		public ColorModel coerceData(WritableRaster raster, boolean isAlphaPremultiplied) {
+			// Don't do anything
+			return null;
+		}
+		
+		
+	};
 	
 	
 	
