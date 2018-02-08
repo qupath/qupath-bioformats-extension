@@ -30,7 +30,6 @@ import java.util.StringTokenizer;
 
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.IntegerProperty;
-import javafx.beans.property.LongProperty;
 import javafx.beans.property.StringProperty;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.extensions.QuPathExtension;
@@ -88,9 +87,9 @@ public class BioFormatsOptionsExtension implements QuPathExtension {
 		
 		prefs.addDirectoryPropertyPreference(pathMemoization, "Bio-Formats memoization directory", "Bio-Formats",
 				"Choose directory where Bio-Formats should write cache files for memoization; by default the directory where the image is stored will be used");
-		prefs.addPropertyPreference(useExtensions, String.class, "Always use Bio-Formats for image extensions", "Bio-Formats", 
+		prefs.addPropertyPreference(useExtensions, String.class, "Always use Bio-Formats for specified image extensions", "Bio-Formats", 
 				"Request that Bio-Formats is always the file reader used for images with specific extensions; enter as a list with spaces between each entry");
-		prefs.addPropertyPreference(skipExtensions, String.class, "Never use Bio-Formats for image extensions", "Bio-Formats", 
+		prefs.addPropertyPreference(skipExtensions, String.class, "Never use Bio-Formats for specified image extensions", "Bio-Formats", 
 				"Request that Bio-Formats is never the file reader used for images with specific extensions; enter as a list with spaces between each entry");
 
 	}
