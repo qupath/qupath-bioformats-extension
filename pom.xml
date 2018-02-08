@@ -85,6 +85,6 @@
 	</build>
 
 	<groupId>qupath</groupId>
-	<version>0.0.4</version>
+	<version>0.0.5</version>
 	<description>QuPath ImageServer implementation using Bio-Formats.</description>
 </project>

@@ -44,7 +44,8 @@ public class BioFormatsServerOptions {
 	private Set<String> useExtensions = new TreeSet<>();
 	
 	private boolean requestParallelization = true;
-	private boolean requestMemoization = true;
+	private int memoizationTimeMillis = 500;
+	private boolean requestParallelizeMultichannel = false;
 	private String pathMemoization;
 	
 	private BioFormatsServerOptions() {}
@@ -69,12 +70,12 @@ public class BioFormatsServerOptions {
 		this.bioformatsEnabled = bioformatsEnabled;
 	}
 	
-	public boolean requestMemoization() {
-		return requestMemoization;
+	public int getMemoizationTimeMillis() {
+		return memoizationTimeMillis;
 	}
 
-	public void setRequestMemoization(final boolean requestMemoization) {
-		this.requestMemoization = requestMemoization;
+	public void setMemoizationTimeMillis(final int memoizationTimeMillis) {
+		this.memoizationTimeMillis = memoizationTimeMillis;
 	}
 	
 	public boolean requestParallelization() {
@@ -85,7 +86,6 @@ public class BioFormatsServerOptions {
 		this.requestParallelization = requestParallelization;
 	}
 	
-	
 	public Set<String> getSkipAlwaysExtensions() {
 		return skipExtensions;
 	}
@@ -94,7 +94,13 @@ public class BioFormatsServerOptions {
 		return useExtensions;
 	}
 
-	
-	
+	public boolean requestParallelizeMultichannel() {
+		return requestParallelizeMultichannel;
+	}
+
+	public void setRequestParallelizeMultichannel(final boolean requestParallelizeMultichannel) {
+		this.requestParallelizeMultichannel = requestParallelizeMultichannel;
+	}
+
 
 }

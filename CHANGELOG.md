@@ -1,3 +1,9 @@
+## Version 0.0.5
+
+* Fixed bug that prevented handling images with more than 4 channels
+* Refined preferences to give more control over performance-related options
+
+
 ## Version 0.0.4
 
 This was a major revision incorporating many bug-fixes and performance improvements, including:
