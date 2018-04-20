@@ -133,6 +133,11 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	private int bpp = 0;
 	
 	/**
+	 * Fix issue related to VSI images having (wrong) z-slices
+	 */
+	private boolean doFixVSI = false;
+	
+	/**
 	 * Representation of the different time points for a time series.
 	 * TODO: Test the use of different time points, if this ever becomes a common use of QuPath.
 	 */
@@ -247,7 +252,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				for (int s = 0; s < meta.getImageCount(); s++) {
 					reader.setSeries(s);
 					String name = meta.getImageName(s);
-					if (reader.isThumbnailSeries() || extraImageNames.contains(name.toLowerCase().trim())) {
+					if (reader.getResolutionCount() == 1 && (reader.isThumbnailSeries() || extraImageNames.contains(name.toLowerCase().trim()))) {
 						name = name + " (thumbnail)";
 						associatedImageMap.put(name, s);
 					}
@@ -342,6 +347,10 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					else if (nChannels > colorArray.length)
 						colorArray = Arrays.copyOf(colorArray, nChannels);
 					nZSlices = reader.getSizeZ();
+					if (nZSlices == nChannels && nChannels > 1 && filePath.toLowerCase().endsWith(".vsi")) {
+						doFixVSI = true;
+						nZSlices = 1;
+					}
 					nTimepoints = reader.getSizeT();
 					bpp = reader.getBitsPerPixel();
 					isRGB = reader.isRGB() && bpp == 8 && nChannels == 3;
@@ -522,10 +531,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	 * If willParallelize() returns false, then the global reader will be provided.
 	 * 
 	 * @return
-	 * @throws IOException 
-	 * @throws FormatException 
-	 * @throws ServiceException 
-	 * @throws DependencyException 
 	 */
 	private BufferedImageReader getBufferedImageReader() {
 		try {
@@ -651,7 +656,11 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					if (images[c] != null)
 						continue;
 					// Read the region
-					int ind = ipReader.getIndex(request.getZ(), c, request.getT());
+					int ind;
+					if (doFixVSI)
+						ind = ipReader.getIndex(c, 0, request.getT());
+					else
+						ind = ipReader.getIndex(request.getZ(), c, request.getT());
 					BufferedImage img2;
 					try {
 						img2 = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
@@ -665,7 +674,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					}
 				}
 				BufferedImage imgMerged;
-				if (images.length <= 4) {
+				if (isRGB) { //images.length <= 4) {
 					// Can use the Bio-Formats merge - but seems limited to 4 channels
 					imgMerged = AWTImageTools.mergeChannels(images);
 				} else {
@@ -701,6 +710,8 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		WritableRaster raster = null;
 		int[] bandIndices;
 		switch (type) {
+			case (BufferedImage.TYPE_BYTE_INDEXED):
+				logger.warn("Merging {} images, with TYPE_BYTE_INDEXED", images.length);
 			case (BufferedImage.TYPE_BYTE_GRAY):
 				byte[][] bytes = new byte[images.length][];
 				bandIndices = new int[images.length];
