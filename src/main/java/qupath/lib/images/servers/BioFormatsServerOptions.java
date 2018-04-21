@@ -48,6 +48,8 @@ public class BioFormatsServerOptions {
 	private boolean requestParallelizeMultichannel = false;
 	private String pathMemoization;
 	
+	private boolean requestChannelZCorrectionVSI = false;
+	
 	private BioFormatsServerOptions() {}
 	
 	public String getPathMemoization() {
@@ -76,6 +78,14 @@ public class BioFormatsServerOptions {
 
 	public void setMemoizationTimeMillis(final int memoizationTimeMillis) {
 		this.memoizationTimeMillis = memoizationTimeMillis;
+	}
+	
+	public boolean requestChannelZCorrectionVSI() {
+		return requestChannelZCorrectionVSI;
+	}
+
+	public void setRequestChannelZCorrectionVSI(final boolean requestChannelZCorrectionVSI) {
+		this.requestChannelZCorrectionVSI = requestChannelZCorrectionVSI;
 	}
 	
 	public boolean requestParallelization() {
