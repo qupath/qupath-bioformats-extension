@@ -66,6 +66,7 @@ public class BioFormatsOptionsExtension implements QuPathExtension {
 		options.setRequestParallelization(useParallelization.get());
 		options.setMemoizationTimeMillis(memoizationTimeMillis.get());
 		options.setRequestParallelizeMultichannel(parallelizeMultichannel.get());
+		options.setRequestChannelZCorrectionVSI(requestChannelZCorrectionVSI.get());
 		fillCollectionWithTokens(useExtensions.get(), options.getUseAlwaysExtensions());
 		fillCollectionWithTokens(skipExtensions.get(), options.getSkipAlwaysExtensions());
 
