@@ -133,6 +133,11 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	private int bpp = 0;
 	
 	/**
+	 * Fix issue related to VSI images having (wrong) z-slices
+	 */
+	private boolean doChannelZCorrectionVSI = false;
+	
+	/**
 	 * Representation of the different time points for a time series.
 	 * TODO: Test the use of different time points, if this ever becomes a common use of QuPath.
 	 */
@@ -247,7 +252,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				for (int s = 0; s < meta.getImageCount(); s++) {
 					reader.setSeries(s);
 					String name = meta.getImageName(s);
-					if (reader.isThumbnailSeries() || extraImageNames.contains(name.toLowerCase().trim())) {
+					if (reader.getResolutionCount() == 1 && (reader.isThumbnailSeries() || extraImageNames.contains(name.toLowerCase().trim()))) {
 						name = name + " (thumbnail)";
 						associatedImageMap.put(name, s);
 					}
@@ -342,6 +347,10 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					else if (nChannels > colorArray.length)
 						colorArray = Arrays.copyOf(colorArray, nChannels);
 					nZSlices = reader.getSizeZ();
+					if (options.requestChannelZCorrectionVSI() && nZSlices == nChannels && nChannels > 1 && filePath.toLowerCase().endsWith(".vsi")) {
+						doChannelZCorrectionVSI = true;
+						nZSlices = 1;
+					}
 					nTimepoints = reader.getSizeT();
 					bpp = reader.getBitsPerPixel();
 					isRGB = reader.isRGB() && bpp == 8 && nChannels == 3;
@@ -358,6 +367,15 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 							if (color != null)
 								colorArray[c] = ColorTools.makeRGBA(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha());
 						}
+						// Update RGB status if needed - sometimes we might really have an RGB image, but the Bio-Formats flag doesn't show this - 
+						// and we want to take advantage of the optimizations where we can
+						if (nChannels == 3 && 
+								bpp == 8 &&
+								colorArray[0] == ColorTools.makeRGB(255, 0, 0) &&
+								colorArray[1] == ColorTools.makeRGB(0, 255, 0) &&
+								colorArray[2] == ColorTools.makeRGB(0, 0, 255)
+								)
+							isRGB = true;
 					}
 					
 					// Try parsing pixel sizes in micrometers
@@ -522,10 +540,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	 * If willParallelize() returns false, then the global reader will be provided.
 	 * 
 	 * @return
-	 * @throws IOException 
-	 * @throws FormatException 
-	 * @throws ServiceException 
-	 * @throws DependencyException 
 	 */
 	private BufferedImageReader getBufferedImageReader() {
 		try {
@@ -617,7 +631,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					
 					// Resize if we need to
 					if (resizeRequired)
-						img = resize(img, finalWidth, finalHeight, isRGB);
+						img = resize(img, finalWidth, finalHeight, ipReader.isRGB());
 					return img;
 				}
 				
@@ -635,7 +649,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 						try {
 							img2 = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
 							if (resizeRequired)
-								img2 = resize(img2, finalWidth, finalHeight, isRGB);
+								img2 = resize(img2, finalWidth, finalHeight, ipReader.isRGB());
 							return img2;
 						} catch (Exception e) {
 							logger.error("Exception reading " + request + " - turning off parallel channel reading", e);
@@ -651,12 +665,16 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					if (images[c] != null)
 						continue;
 					// Read the region
-					int ind = ipReader.getIndex(request.getZ(), c, request.getT());
+					int ind;
+					if (doChannelZCorrectionVSI)
+						ind = ipReader.getIndex(c, 0, request.getT());
+					else
+						ind = ipReader.getIndex(request.getZ(), c, request.getT());
 					BufferedImage img2;
 					try {
 						img2 = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
 						if (resizeRequired)
-							img2 = resize(img2, finalWidth, finalHeight, isRGB);
+							img2 = resize(img2, finalWidth, finalHeight, ipReader.isRGB());
 						images[c] = img2;
 					} catch (FormatException e) {
 						logger.error("Format exception reading " + request, e);
@@ -665,7 +683,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					}
 				}
 				BufferedImage imgMerged;
-				if (images.length <= 4) {
+				if (isRGB) { //images.length <= 4) {
 					// Can use the Bio-Formats merge - but seems limited to 4 channels
 					imgMerged = AWTImageTools.mergeChannels(images);
 				} else {
@@ -701,6 +719,8 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		WritableRaster raster = null;
 		int[] bandIndices;
 		switch (type) {
+			case (BufferedImage.TYPE_BYTE_INDEXED):
+				logger.warn("Merging {} images, with TYPE_BYTE_INDEXED", images.length);
 			case (BufferedImage.TYPE_BYTE_GRAY):
 				byte[][] bytes = new byte[images.length][];
 				bandIndices = new int[images.length];
