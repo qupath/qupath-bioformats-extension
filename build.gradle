@@ -1,6 +1,6 @@
 group = 'qupath'
-version = '0.0.6-SNAPSHOT'
-description = 'qupath-extension-bioformats'
+version = '0.0.6'
+description = 'qupath-bioformats-extension'
 
 repositories {
 	mavenLocal()
@@ -20,8 +20,8 @@ targetCompatibility = JavaVersion.current()
 
 dependencies {
   compile group: 'ome', name: 'bioformats_package', version: '5.8.1'
-  compile group: 'qupath', name: 'qupath-core-awt'
-  compile group: 'qupath', name: 'qupath-gui-fx'
+  compile group: 'qupath', name: 'qupath-core-awt', version: '0.1.2'
+  compile group: 'qupath', name: 'qupath-gui-fx', version: '0.1.2'
 }
 
 
