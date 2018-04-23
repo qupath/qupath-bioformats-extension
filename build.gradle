@@ -1,0 +1,33 @@
+group = 'qupath'
+version = '0.0.6'
+description = 'qupath-bioformats-extension'
+
+repositories {
+	mavenLocal()
+    mavenCentral()
+    maven {
+        name 'Unidata'
+        url 'https://artifacts.unidata.ucar.edu/content/repositories/unidata-releases'
+    }
+    maven {
+        url 'https://artifacts.openmicroscopy.org/artifactory/maven/'
+    }
+}
+
+apply plugin: 'java'
+sourceCompatibility = JavaVersion.current()
+targetCompatibility = JavaVersion.current()
+
+dependencies {
+  compile group: 'ome', name: 'bioformats_package', version: '5.8.1'
+  compile group: 'qupath', name: 'qupath-core-awt', version: '0.1.2'
+  compile group: 'qupath', name: 'qupath-gui-fx', version: '0.1.2'
+}
+
+
+jar {
+    manifest {
+        attributes 'Implementation-Title': 'QuPath Bio-Formats extension',
+                   'Implementation-Version': version
+    }
+}

@@ -1,3 +1,10 @@
+## Version 0.0.6
+* Switch to Gradle
+* Added workaround for VSI reading bug that meant channels & z-slices were sometimes confused (available in preferences, turned off by default)
+* Added fix where 4-channel 8-bit images could be converted to RGB, losing the 4th channel information for some commands
+* Added fix where some formats (e.g..ims) would have 8-bit RGB data, but this was treated as multichannel; now such cases are treated as packed (A)RGB, giving better performance & more consistent behavior
+
+
 ## Version 0.0.5
 
 * Fixed bug that prevented handling images with more than 4 channels
