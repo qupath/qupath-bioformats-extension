@@ -67,6 +67,7 @@ import loci.formats.Memoizer;
 import loci.formats.gui.AWTImageTools;
 import loci.formats.gui.BufferedImageReader;
 import loci.formats.in.NDPIReader;
+import loci.formats.in.CellSensReader;
 import loci.formats.meta.IMetadata;
 import loci.formats.meta.MetadataStore;
 import loci.formats.services.OMEXMLService;
@@ -437,38 +438,45 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			// Loop through the series again & determine downsamples
 			downsamples = new double[nResolutions];
 			for (int i = 0; i < nResolutions; i++) {
-				int w = resWidths[i];
-				int h = resHeights[i];
-				double downsampleX = (double)width / w;
-				double downsampleY = (double)height / h;
-				reader.setResolution(i);
-				int sizeC = reader.getSizeC();
-				double log2 = Math.log(2.0);
-				boolean showWarning = true;
-				if (GeneralTools.almostTheSame(downsampleX, downsampleY, 0.001) && sizeC == nChannels) {
-					// If our downsample values are very close, average them
-					downsamples[i] = (downsampleX + downsampleY) / 2;
-					showWarning = false;
-				}
-	//				downsamples[i] = Math.round((downsampleX + downsampleY) / 2);
-				else if (Math.round(downsampleX) == Math.round(downsampleY) && Math.abs(downsampleX - Math.round(downsampleX)) < 0.1 && sizeC == nChannels) {
-					// If our downsample values are both close to (the same) integer, use that
-					downsamples[i] = Math.round(downsampleX);
+				// Special case of VSI files on the CellSens Reader. Magnification is not directly related to the
+				// width and height of the images in the pyramid...
+				// Also they are always in order (until BioFormats decides to change that...)
+				if(reader.getReader() instanceof CellSensReader) {
+					downsamples[i] = 2 ^ i;
 				} else {
-					// Check if downsample was aiming to be close to a power of 2...
-					// (This helps particularly with VSI... the true value is likely a power of 2?)
-					double downsampleXlog2 = Math.log(downsampleX)/log2;
-					double downsampleYlog2 = Math.log(downsampleY)/log2;
-					if (Math.round(downsampleXlog2) == Math.round(downsampleYlog2)
-							&& Math.abs(downsampleXlog2 - Math.round(downsampleXlog2)) < 0.1
-							&& Math.abs(downsampleYlog2 - Math.round(downsampleYlog2)) < 0.1
-							&& sizeC == nChannels) {
-					} else {
-						downsamples[i] = Double.NaN;
+					int w = resWidths[i];
+					int h = resHeights[i];
+					double downsampleX = (double) width / w;
+					double downsampleY = (double) height / h;
+					reader.setResolution(i);
+					int sizeC = reader.getSizeC();
+					double log2 = Math.log(2.0);
+					boolean showWarning = true;
+					if (GeneralTools.almostTheSame(downsampleX, downsampleY, 0.001) && sizeC == nChannels) {
+						// If our downsample values are very close, average them
+						downsamples[i] = (downsampleX + downsampleY) / 2;
+						showWarning = false;
 					}
+					//				downsamples[i] = Math.round((downsampleX + downsampleY) / 2);
+					else if (Math.round(downsampleX) == Math.round(downsampleY) && Math.abs(downsampleX - Math.round(downsampleX)) < 0.1 && sizeC == nChannels) {
+						// If our downsample values are both close to (the same) integer, use that
+						downsamples[i] = Math.round(downsampleX);
+					} else {
+						// Check if downsample was aiming to be close to a power of 2...
+						// (This helps particularly with VSI... the true value is likely a power of 2?)
+						double downsampleXlog2 = Math.log(downsampleX) / log2;
+						double downsampleYlog2 = Math.log(downsampleY) / log2;
+						if (Math.round(downsampleXlog2) == Math.round(downsampleYlog2)
+								&& Math.abs(downsampleXlog2 - Math.round(downsampleXlog2)) < 0.1
+								&& Math.abs(downsampleYlog2 - Math.round(downsampleYlog2)) < 0.1
+								&& sizeC == nChannels) {
+						} else {
+							downsamples[i] = Double.NaN;
+						}
+					}
+					if (showWarning)
+						logger.warn("Calculated downsample values for series {} differ at resolution {}: x={} and y={} - will use value {}", series, i, downsampleX, downsampleY, downsamples[i]);
 				}
-				if (showWarning)
-					logger.warn("Calculated downsample values for series {} differ at resolution {}: x={} and y={} - will use value {}", series, i, downsampleX, downsampleY, downsamples[i]);
 			}
 			
 			// Check the tile size is potentially ok
