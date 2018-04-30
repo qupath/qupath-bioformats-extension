@@ -293,14 +293,24 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			reader.setSeries(series);
 			
 		    // Try getting the magnification
-			if (!reader.isThumbnailSeries() && meta.getInstrumentCount() > series) {
-			    try {
-		    		magnification = meta.getObjectiveNominalMagnification(series, 0);
-		    		if (meta.getObjectiveCount(series) > 1)
-		    			logger.warn("Objective instrument count is {} - I'm not sure how to interpret this when it is != 1, check the magnification value for reasonableness", meta.getObjectiveCount(series));
-			    } catch (Exception e) {
-			    		logger.warn("Unable to parse magnification");
-			    }
+			if (!reader.isThumbnailSeries()) {
+				try {
+					// Fix to get the objective magnification using bioformats metadata
+					// there has GOT to be an easier way to get the instrument index from the Instrument Ref
+					//String instrumentRef = meta.getImageInstrumentRef(series);
+					//logger.error("Instrument Ref is {}"+instrumentRef);
+					//int instrumentIndex = Integer.parseInt(instrumentRef.substring(instrumentRef.length()-1));
+					// above code works in fiji but not here. bioformats version difference?
+					//can hack for now with instrumentIndex =0
+					int instrumentIndex=0;
+
+					String objectiveID = meta.getObjectiveSettingsID(series); // need the ID of the objective
+					int objectiveIndex = Integer.parseInt(objectiveID.substring(objectiveID.length()-1)); // Must extract the integer index
+					magnification = meta.getObjectiveNominalMagnification(instrumentIndex,objectiveIndex ); // and get the magnification for the objective at that index
+					logger.info("Magnification for series {} is {}", series, magnification);
+				} catch (Exception e) {
+					logger.warn("Unable to parse magnification", e);
+				}
 			}
 			// At the time of writing, Bio-Formats does not parse the magnification from NDPI files
 			// See http://openslide.org/formats/hamamatsu/
