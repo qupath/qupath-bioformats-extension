@@ -483,7 +483,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					setSizeZ(nZSlices).
 					setSizeT(nTimepoints).
 					setPixelSizeMicrons(pixelWidth, pixelHeight).
-					setZSpacingMicrons(zSpacing > 1 ? zSpacing : Double.NaN).
+					setZSpacingMicrons(zSpacing).
 					setMagnification(magnification).
 					setTimeUnit(timeUnit);
 			if (tileWidth > 0 && tileHeight > 0)
@@ -715,6 +715,19 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		int w = imgFirst.getWidth();
 		int h = imgFirst.getHeight();
 		int type = imgFirst.getType();
+		
+		// If we have a custom type, try to use the transfer type
+		if (type == BufferedImage.TYPE_CUSTOM) {
+			int transferType = imgFirst.getRaster().getTransferType();
+			switch (transferType) {
+			case DataBuffer.TYPE_BYTE:
+				type = BufferedImage.TYPE_BYTE_GRAY;
+				break;
+			case DataBuffer.TYPE_USHORT:
+				type = BufferedImage.TYPE_USHORT_GRAY;
+				break;
+			}
+		}
 		
 		WritableRaster raster = null;
 		int[] bandIndices;
