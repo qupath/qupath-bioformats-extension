@@ -15,8 +15,8 @@ repositories {
 }
 
 apply plugin: 'java'
-sourceCompatibility = JavaVersion.current()
-targetCompatibility = JavaVersion.current()
+sourceCompatibility = JavaVersion.VERSION_1_8
+targetCompatibility = JavaVersion.VERSION_1_8
 
 dependencies {
   compile group: 'ome', name: 'bioformats_package', version: '5.8.1'

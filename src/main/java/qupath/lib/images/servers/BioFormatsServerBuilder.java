@@ -24,6 +24,10 @@
 package qupath.lib.images.servers;
 
 import java.awt.image.BufferedImage;
+import java.io.File;
+import java.util.HashSet;
+import java.util.Set;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,10 +44,17 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 	
 	final private static Logger logger = LoggerFactory.getLogger(BioFormatsServerBuilder.class);
 	
+	final private Set<File> previousFiles = new HashSet<>();
+	
 	@Override
 	public ImageServer<BufferedImage> buildServer(String path) {
 		try {
-			return new BioFormatsImageServer(path);
+			BioFormatsImageServer server = new BioFormatsImageServer(path);
+			// If we have successfully created a server from this path, store the file so we know we can use it again
+			File file = server.getFile();
+			if (file != null)
+				previousFiles.add(file);
+			return server;
 		} catch (Exception e) {
 			logger.error("Unable to open {}", path, e);
 		}
@@ -65,6 +76,12 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 				return 0;
 			default:
 		}
+		
+		// Check if we've previously opened this file successfully with Bio-Formats -
+		// if so, return a high level of confidence
+		String[] splitPath = BioFormatsImageServer.splitFilePathAndSeriesName(path);
+		if (previousFiles.contains(new File(splitPath[0])))
+			return 5;
 		
 		// Default to our normal checks
 		switch (type) {

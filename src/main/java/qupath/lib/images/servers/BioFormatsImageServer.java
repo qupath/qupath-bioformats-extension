@@ -66,11 +66,9 @@ import loci.formats.ImageReader;
 import loci.formats.Memoizer;
 import loci.formats.gui.AWTImageTools;
 import loci.formats.gui.BufferedImageReader;
-import loci.formats.in.NDPIReader;
 import loci.formats.meta.IMetadata;
 import loci.formats.meta.MetadataStore;
 import loci.formats.services.OMEXMLService;
-import loci.formats.tiff.IFD;
 import qupath.lib.awt.common.AwtTools;
 import qupath.lib.awt.images.PathBufferedImage;
 import qupath.lib.common.ColorTools;
@@ -161,7 +159,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	/**
 	 * Delimiter between the file path and any sub-image names
 	 */
-	private String delimiter = "::";
+	private static String delimiter = "::";
 
 	/**
 	 * Numeric identifier for the image (there might be more than one in the file)
@@ -225,13 +223,9 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		TimeUnit timeUnit = null;
 		
 		// See if there is a series name embedded in the path
-		int index = path.indexOf(delimiter);
-		String seriesName = null;
-		filePath = path;
-		if (index > 0 && index < path.length()-delimiter.length() &&  !new File(path).exists()) {
-			seriesName = path.substring(index+delimiter.length());
-			filePath = path.substring(0, index);
-		}
+		String[] splitPath = splitFilePathAndSeriesName(path);
+		filePath = splitPath[0];
+		String seriesName = splitPath[1];
 		
 		this.path = path;
 		
@@ -283,13 +277,16 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				imageMap = Collections.emptyMap();
 			}
 			
-			
 			if (seriesIndex < 0)
 				throw new RuntimeException("Unable to find any non-thumbnail images within " + path);
 			
 			// Store the series we are actually using
 			this.series = seriesIndex;
 			reader.setSeries(series);
+			
+			// Get the format in case we need it
+			String format = reader.getFormat();
+			logger.debug("Reading format: {}", format);
 			
 		    // Try getting the magnification
 			if (!reader.isThumbnailSeries() && meta.getInstrumentCount() > series) {
@@ -300,19 +297,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			    } catch (Exception e) {
 			    		logger.warn("Unable to parse magnification");
 			    }
-			}
-			// At the time of writing, Bio-Formats does not parse the magnification from NDPI files
-			// See http://openslide.org/formats/hamamatsu/
-			if (Double.isNaN(magnification) && reader.getReader() instanceof NDPIReader) {
-				try {
-					NDPIReader ndpiReader = (NDPIReader)reader.getReader();
-					IFD ifd = ndpiReader.getIFDs().get(0);
-					Object o = ifd.getIFDValue(65421);
-					if (o instanceof Number)
-						magnification = ((Number)o).doubleValue();
-				} catch (Exception e) {
-					logger.warn("Problem trying to parse magnification from NDPI file", e);
-				}
 			}
 		    		
 			// Get the dimensions for the series
@@ -347,7 +331,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					else if (nChannels > colorArray.length)
 						colorArray = Arrays.copyOf(colorArray, nChannels);
 					nZSlices = reader.getSizeZ();
-					if (options.requestChannelZCorrectionVSI() && nZSlices == nChannels && nChannels > 1 && filePath.toLowerCase().endsWith(".vsi")) {
+					if (options.requestChannelZCorrectionVSI() && nZSlices == nChannels && nChannels > 1 && "CellSens VSI".equals(format)) {
 						doChannelZCorrectionVSI = true;
 						nZSlices = 1;
 					}
@@ -518,6 +502,25 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		logger.debug(String.format("Initialization time: %d ms", endTime-startTime));
 	}
 
+
+	/**
+	 * Give a path that may optionally encode a series name, split to separate the 'file' part from the 'series' part.
+	 * 
+	 * @param path the path, which may be of the form {@code filepath} or {@code filepath::seriesName}.
+	 * @return an array where the first entry is the file path and the second is the series name; the series name may be {@code null}.
+	 */
+	static String[] splitFilePathAndSeriesName(final String path) {
+		// See if there is a series name embedded in the path
+		int index = path.indexOf(delimiter);
+		String seriesName = null;
+		String filePath = path;
+		if (index > 0 && index < path.length()-delimiter.length() &&  !new File(path).exists()) {
+			seriesName = path.substring(index+delimiter.length());
+			filePath = path.substring(0, index);
+		}
+		return new String[] {filePath, seriesName};
+	}
+	
 	
 		
 	/**
@@ -1023,8 +1026,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				}
 				return reader;
 			}
-			BufferedImageReader primaryReader = getPrimaryReader(server, path);
-			reader = createReader(server.options, primaryReader.getReader().getClass(), path, null);
+			reader = createReader(server.options, path, null);
 			mapReadersPerThread.put(Thread.currentThread(), reader);
 			return reader;
 		}
@@ -1186,14 +1188,19 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				imageReader.setMetadataStore(store);
 			
 			if (id != null) {
-				imageReader.setId(id);
 				if (memoizer != null) {
 					File fileMemo = ((Memoizer)imageReader).getMemoFile(id);
+					boolean memoFileExists = fileMemo.exists();
+					imageReader.setId(id);
 					memoizationFileSize = fileMemo == null ? 0L : fileMemo.length();
 					if (memoizationFileSize == 0L)
 						logger.info("No memoization file generated for {}", id);
+					else if (!memoFileExists)
+						logger.info(String.format("Generating memoization file %s (%.2f MB)", fileMemo.getAbsolutePath(), memoizationFileSize/1024.0/1024.0));
 					else
-						logger.info(String.format("Generating memoization file %s (%.2f MB)", fileMemo.getAbsolutePath(), memoizationFileSize/1024.0/1024.0));			
+						logger.debug("Memoization file exists at {}", fileMemo.getAbsolutePath());
+				} else {
+					imageReader.setId(id);
 				}
 			}
 			return BufferedImageReader.makeBufferedImageReader(imageReader);
