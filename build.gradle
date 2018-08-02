@@ -1,5 +1,5 @@
 group = 'qupath'
-version = '0.0.7-SNAPSHOT'
+version = '0.0.7'
 description = 'qupath-bioformats-extension'
 
 repositories {
@@ -31,4 +31,5 @@ jar {
         attributes 'Implementation-Title': 'QuPath Bio-Formats extension',
                    'Implementation-Version': version
     }
+    archiveName 'qupath-extension-bioformats.jar'
 }
