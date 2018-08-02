@@ -28,11 +28,15 @@ import java.util.Collection;
 import java.util.List;
 import java.util.StringTokenizer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.IntegerProperty;
 import javafx.beans.property.StringProperty;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.extensions.QuPathExtension;
+import qupath.lib.gui.helpers.DisplayHelpers;
 import qupath.lib.gui.panels.PreferencePanel;
 import qupath.lib.gui.prefs.PathPrefs;
 
@@ -42,9 +46,25 @@ import qupath.lib.gui.prefs.PathPrefs;
  * @author Pete Bankhead
  */
 public class BioFormatsOptionsExtension implements QuPathExtension {
+	
+	private final static Logger logger = LoggerFactory.getLogger(BioFormatsOptionsExtension.class);
+	
+	private String bfVersion = null;
 
 	@Override
 	public void installExtension(QuPathGUI qupath) {
+		
+		// Request Bio-Formats version - if null, Bio-Formats is missing & we can't install the extension
+		bfVersion = BioFormatsServerBuilder.getBioFormatsVersion();
+		if (bfVersion == null) {
+			DisplayHelpers.showErrorMessage("Bio-Formats extension",
+						"The Bio-Formats extension is installed, but 'bioformats_package.jar' is missing!\n\n" + 
+						"Please make sure both .jar files are copied to the QuPath extensions folder.");
+			return;
+		} else {
+			logger.info("Bio-Formats version {}", bfVersion);
+		}
+		
 		
 		BioFormatsServerOptions options = BioFormatsServerOptions.getInstance();
 		
@@ -114,12 +134,19 @@ public class BioFormatsOptionsExtension implements QuPathExtension {
 
 	@Override
 	public String getName() {
-		return "Bio-Formats server options";
+		if (bfVersion == null)
+			return "Bio-Formats server options (Bio-Formats library is missing!)";
+		else
+			return "Bio-Formats server options (Bio-Formats " + bfVersion + ")";
 	}
 
 	@Override
 	public String getDescription() {
-		return "Installs options for the Bio-Formats image server in the QuPath preference pane";
+		if (bfVersion == null) {
+			return "See https://github.com/qupath/qupath-bioformats-extension for details about installing 'bioformats_package.jar'";
+		} else {
+			return "Installs options for the Bio-Formats image server in the QuPath preference pane";			
+		}
 	}
 
 }

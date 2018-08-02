@@ -24,9 +24,15 @@
 package qupath.lib.images.servers;
 
 import java.awt.image.BufferedImage;
+import java.io.File;
+import java.util.HashSet;
+import java.util.Set;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import qupath.lib.images.servers.ImageServer;
+import qupath.lib.images.servers.ImageServerBuilder;
 import qupath.lib.images.servers.BioFormatsServerOptions.UseBioformats;
 import qupath.lib.images.servers.FileFormatInfo.ImageCheckType;
 
@@ -40,10 +46,17 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 	
 	final private static Logger logger = LoggerFactory.getLogger(BioFormatsServerBuilder.class);
 	
+	final private Set<File> previousFiles = new HashSet<>();
+	
 	@Override
 	public ImageServer<BufferedImage> buildServer(String path) {
 		try {
-			return new BioFormatsImageServer(path);
+			BioFormatsImageServer server = new BioFormatsImageServer(path);
+			// If we have successfully created a server from this path, store the file so we know we can use it again
+			File file = server.getFile();
+			if (file != null)
+				previousFiles.add(file);
+			return server;
 		} catch (Exception e) {
 			logger.error("Unable to open {}", path, e);
 		}
@@ -56,6 +69,10 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 		if (cls != BufferedImage.class)
 			return 0;
 		
+		// We also can't do anything if Bio-Formats isn't installed
+		if (getBioFormatsVersion() == null)
+			return 0;
+		
 		// Check the options to see whether we really really do or don't want to read this
 		BioFormatsServerOptions options = BioFormatsServerOptions.getInstance();
 		switch (checkPath(options, path)) {
@@ -65,6 +82,12 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 				return 0;
 			default:
 		}
+		
+		// Check if we've previously opened this file successfully with Bio-Formats -
+		// if so, return a high level of confidence
+		String[] splitPath = BioFormatsImageServer.splitFilePathAndSeriesName(path);
+		if (previousFiles.contains(new File(splitPath[0])))
+			return 5;
 		
 		// Default to our normal checks
 		switch (type) {
@@ -85,14 +108,34 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 
 	@Override
 	public String getName() {
-		return "Bio-Formats";
+		return "Bio-Formats builder";
 	}
 
 	@Override
 	public String getDescription() {
-		return "Image server using the Bio-Formats library";
+		String bfVersion = getBioFormatsVersion();
+		if (bfVersion == null)
+			return "Image server using the Bio-Formats library - but it won't work because 'bioformats_package.jar' is missing.";
+		else
+			return "Image server using the Bio-Formats library (" + bfVersion + ")";
 	}
 	
+	/**
+	 * Request the Bio-Formats version number from {@code loci.formats.FormatTools.VERSION}.
+	 * 
+	 * This uses reflection, returning {@code null} if Bio-Formats cannot be found.
+	 * 
+	 * @return
+	 */
+	static String getBioFormatsVersion() {
+		try {
+			Class<?> cls = Class.forName("loci.formats.FormatTools");
+			return (String)cls.getField("VERSION").get(null);	
+		} catch (Exception e) {
+			logger.error("Error requesting version from Bio-Formats", e);
+			return null;
+		}
+	}
 	
 	/**
 	 * Check whether Bio-Formats definitely should/shouldn't be used to try opening an image, 
