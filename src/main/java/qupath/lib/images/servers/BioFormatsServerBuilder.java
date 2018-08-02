@@ -31,7 +31,6 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import loci.formats.FormatTools;
 import qupath.lib.images.servers.ImageServer;
 import qupath.lib.images.servers.ImageServerBuilder;
 import qupath.lib.images.servers.BioFormatsServerOptions.UseBioformats;
@@ -70,6 +69,10 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 		if (cls != BufferedImage.class)
 			return 0;
 		
+		// We also can't do anything if Bio-Formats isn't installed
+		if (getBioFormatsVersion() == null)
+			return 0;
+		
 		// Check the options to see whether we really really do or don't want to read this
 		BioFormatsServerOptions options = BioFormatsServerOptions.getInstance();
 		switch (checkPath(options, path)) {
@@ -105,14 +108,34 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 
 	@Override
 	public String getName() {
-		return "Bio-Formats";
+		return "Bio-Formats builder";
 	}
 
 	@Override
 	public String getDescription() {
-		return "Image server using the Bio-Formats library (" + FormatTools.VERSION + ")";
+		String bfVersion = getBioFormatsVersion();
+		if (bfVersion == null)
+			return "Image server using the Bio-Formats library - but it won't work because 'bioformats_package.jar' is missing.";
+		else
+			return "Image server using the Bio-Formats library (" + bfVersion + ")";
 	}
 	
+	/**
+	 * Request the Bio-Formats version number from {@code loci.formats.FormatTools.VERSION}.
+	 * 
+	 * This uses reflection, returning {@code null} if Bio-Formats cannot be found.
+	 * 
+	 * @return
+	 */
+	static String getBioFormatsVersion() {
+		try {
+			Class<?> cls = Class.forName("loci.formats.FormatTools");
+			return (String)cls.getField("VERSION").get(null);	
+		} catch (Exception e) {
+			logger.error("Error requesting version from Bio-Formats", e);
+			return null;
+		}
+	}
 	
 	/**
 	 * Check whether Bio-Formats definitely should/shouldn't be used to try opening an image, 

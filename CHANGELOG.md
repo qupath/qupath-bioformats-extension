@@ -11,6 +11,7 @@
 * Improved parsing of objective magnification
 * Added new code to test QuPath's use of Bio-Formats
 * Added Bio-Formats version number under 'Help &rarr; Installed extensions'
+* An error is shown when starting QuPath is 'bioformats_package.jar' is missing
 
 ## Version 0.0.6
 
