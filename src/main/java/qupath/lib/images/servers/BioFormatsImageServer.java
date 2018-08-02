@@ -25,10 +25,12 @@ package qupath.lib.images.servers;
 
 import java.awt.Graphics2D;
 import java.awt.Rectangle;
+import java.awt.image.BandedSampleModel;
 import java.awt.image.BufferedImage;
 import java.awt.image.ColorModel;
 import java.awt.image.DataBuffer;
 import java.awt.image.DataBufferByte;
+import java.awt.image.DataBufferFloat;
 import java.awt.image.DataBufferUShort;
 import java.awt.image.Raster;
 import java.awt.image.WritableRaster;
@@ -55,25 +57,29 @@ import org.slf4j.LoggerFactory;
 
 import ome.units.UNITS;
 import ome.units.quantity.Length;
-import ome.units.unit.Unit;
 import loci.common.services.DependencyException;
 import loci.common.services.ServiceException;
-import loci.common.services.ServiceFactory;
 import loci.formats.ClassList;
 import loci.formats.FormatException;
 import loci.formats.IFormatReader;
 import loci.formats.ImageReader;
 import loci.formats.Memoizer;
+import loci.formats.MetadataTools;
 import loci.formats.gui.AWTImageTools;
 import loci.formats.gui.BufferedImageReader;
+import loci.formats.meta.DummyMetadata;
 import loci.formats.meta.IMetadata;
 import loci.formats.meta.MetadataStore;
-import loci.formats.services.OMEXMLService;
+import loci.formats.ome.OMEXMLMetadata;
 import qupath.lib.awt.common.AwtTools;
 import qupath.lib.awt.images.PathBufferedImage;
 import qupath.lib.common.ColorTools;
 import qupath.lib.common.GeneralTools;
 import qupath.lib.images.PathImage;
+import qupath.lib.images.servers.AbstractImageServer;
+import qupath.lib.images.servers.ImageServer;
+import qupath.lib.images.servers.ImageServerMetadata;
+import qupath.lib.images.servers.ServerTools;
 import qupath.lib.regions.RegionRequest;
 
 /**
@@ -81,7 +87,7 @@ import qupath.lib.regions.RegionRequest;
  * 
  * See http://www.openmicroscopy.org/site/products/bio-formats
  * 
- * See also https://docs.openmicroscopy.org/bio-formats/5.7.2/developers/matlab-dev.html#improving-reading-performance
+ * See also https://docs.openmicroscopy.org/bio-formats/5.9.0/developers/matlab-dev.html#improving-reading-performance
  * 
  * @author Pete Bankhead
  *
@@ -89,6 +95,29 @@ import qupath.lib.regions.RegionRequest;
 public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	
 	private static final Logger logger = LoggerFactory.getLogger(BioFormatsImageServer.class);
+	
+	/**
+	 * Default colors
+	 */
+	private static final List<Integer> DEFAULT_COLORS = Arrays.asList(
+		ColorTools.makeRGB(255, 0, 0),    // Red
+		ColorTools.makeRGB(0, 255, 0),    // Green
+		ColorTools.makeRGB(0, 0, 255),    // Blue
+		ColorTools.makeRGB(255, 255, 0),  // Yellow
+		ColorTools.makeRGB(0, 255, 255),  // Cyan
+		ColorTools.makeRGB(255, 0, 255),  // Magenta
+		ColorTools.makeRGB(255, 255, 255) // White
+		);
+	
+	/**
+	 * Minimum tile size - smaller values will be ignored.
+	 */
+	private static int MIN_TILE_SIZE = 32;
+	
+	/**
+	 * Maximum tile size - larger values will be ignored.
+	 */
+	private static int MAX_TILE_SIZE = 4096;
 	
 	/**
 	 * Image names (in lower case) normally associated with 'extra' images, but probably not representing the main image in the file.
@@ -154,7 +183,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	/**
 	 * List representing the preferred colors to use for each channel, as packed int values.
 	 */
-	private List<Integer> channelColors = new ArrayList<>();
+	private List<Channel> channels = new ArrayList<>();
 	
 	/**
 	 * Delimiter between the file path and any sub-image names
@@ -213,10 +242,6 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		if (path.toLowerCase().endsWith(".zip"))
 			throw new FormatException("ZIP not supported");
 
-		// Warning, because my interpretation of what Bio-Formats is doing may be wrong...
-		// leading to some unfortunate bugs
-		logger.warn("QuPath Bio-Formats extension is in beta!  Be watchful for bugs...");
-				
 		// Create variables for metadata
 		int width = 0, height = 0, nChannels = 1, nZSlices = 1, nTimepoints = 1, tileWidth = 0, tileHeight = 0;
 		double pixelWidth = Double.NaN, pixelHeight = Double.NaN, zSpacing = Double.NaN, magnification = Double.NaN;
@@ -238,16 +263,19 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			// Populate the image server list if we have more than one image
 			int seriesIndex = -1;
 			
+			// If we have more than one series, we need to construct maps of 'analyzable' & associated images
 			if (reader.getSeriesCount() > 1) {
 				imageMap = new LinkedHashMap<>(reader.getSeriesCount());
 				associatedImageMap = new LinkedHashMap<>(reader.getSeriesCount());
+				// Series in the reader API should correspond to images according to the metadata API
 				if (reader.getSeriesCount() != meta.getImageCount())
 					logger.error("Bio-Formats series and image counts do not match");
+				
+				// Loop through series to find out whether we have multiresolution images, or associated images (e.g. thumbnails)
 				for (int s = 0; s < meta.getImageCount(); s++) {
 					reader.setSeries(s);
 					String name = meta.getImageName(s);
-					if (reader.getResolutionCount() == 1 && (reader.isThumbnailSeries() || extraImageNames.contains(name.toLowerCase().trim()))) {
-						name = name + " (thumbnail)";
+					if (reader.isThumbnailSeries() || (reader.getResolutionCount() == 1 && extraImageNames.contains(name.toLowerCase().trim()))) {
 						associatedImageMap.put(name, s);
 					}
 					else {
@@ -257,8 +285,9 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					if (seriesName != null && seriesName.equals(name)) {
 						seriesIndex = s;
 					}
-					logger.debug("Adding " + meta.getImageName(s));
+					logger.debug("Adding {}", name);
 				}
+				
 				// If we have just one image in the image list, then reset to none - we can't switch
 				if (imageMap.size() == 1 && seriesIndex < 0) {
 					seriesIndex = imageMap.values().iterator().next();
@@ -278,7 +307,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			}
 			
 			if (seriesIndex < 0)
-				throw new RuntimeException("Unable to find any non-thumbnail images within " + path);
+				throw new RuntimeException("Unable to find any valid images within " + path);
 			
 			// Store the series we are actually using
 			this.series = seriesIndex;
@@ -289,177 +318,209 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			logger.debug("Reading format: {}", format);
 			
 		    // Try getting the magnification
-			if (!reader.isThumbnailSeries() && meta.getInstrumentCount() > series) {
-			    try {
-		    		magnification = meta.getObjectiveNominalMagnification(series, 0);
-		    		if (meta.getObjectiveCount(series) > 1)
-		    			logger.warn("Objective instrument count is {} - I'm not sure how to interpret this when it is != 1, check the magnification value for reasonableness", meta.getObjectiveCount(series));
-			    } catch (Exception e) {
-			    		logger.warn("Unable to parse magnification");
-			    }
-			}
+		    try {
+		    	String objectiveID = meta.getObjectiveSettingsID(series);
+		    	int objectiveIndex = -1;
+		    	int instrumentIndex = -1;
+		    	int nInstruments = meta.getInstrumentCount();
+		    	for (int i = 0; i < nInstruments; i++) {
+			    	int nObjectives = meta.getObjectiveCount(i);
+			    	for (int o = 0; 0 < nObjectives; o++) {
+			    		if (objectiveID.equals(meta.getObjectiveID(i, o))) {
+			    			instrumentIndex = i;
+			    			objectiveIndex = o;
+			    			break;
+			    		}
+			    	}	    		
+		    	}
+		    	if (instrumentIndex < 0) {
+		    		logger.warn("Cannot find objective for ref {}", objectiveID);
+		    	} else {
+			    	Double magnificationObject = meta.getObjectiveNominalMagnification(instrumentIndex, objectiveIndex);
+			    	if (magnificationObject == null) {
+			    		logger.warn("Nominal objective magnification missing for {}:{}", instrumentIndex, objectiveIndex);
+			    	} else
+			    		magnification = magnificationObject;		    		
+		    	}
+		    } catch (Exception e) {
+		    	logger.warn("Unable to parse magnification: {}", e.getLocalizedMessage());
+		    }
 		    		
-			// Get the dimensions for the series
-			int nResolutions = reader.getResolutionCount();
-			int[] resWidths = new int[nResolutions];
-			int[] resHeights = new int[nResolutions];
+			// Get the dimensions for the requested series
+			// The first resolution is the highest, i.e. the largest image
+			width = reader.getSizeX();
+			height = reader.getSizeY();
+			tileWidth = reader.getOptimalTileWidth();
+			tileHeight = reader.getOptimalTileHeight();
+			nChannels = reader.getSizeC();
 			
-			for (int count = 0; count < meta.getImageCount(); count++) {
-				logger.debug(meta.getImageName(count) + ": Physical pixels x: " + meta.getPixelsPhysicalSizeX(count));
+			// Prepared to set channel colors
+			channels.clear();
+						
+			nZSlices = reader.getSizeZ();
+			// Workaround bug whereby VSI channels can also be replicated as z-slices
+			if (options.requestChannelZCorrectionVSI() && nZSlices == nChannels && nChannels > 1 && "CellSens VSI".equals(format)) {
+				doChannelZCorrectionVSI = true;
+				nZSlices = 1;
+			}
+			nTimepoints = reader.getSizeT();
+			bpp = reader.getBitsPerPixel();
+			isRGB = reader.isRGB() && bpp == 8 && nChannels == 3;
+			
+			// Try to read the default display colors for each channel from the file
+			if (!isRGB) {
+				for (int c = 0; c < nChannels; c++) {
+					ome.xml.model.primitives.Color color = null;
+					String channelName = "Channel " + (c + 1);
+					try {
+						channelName = meta.getChannelName(series, c);
+						color = meta.getChannelColor(series, c);
+					} catch (Exception e) {
+						logger.warn("Unable to parse color", e);
+					}
+					Integer channelColor = null;
+					if (color != null)
+						channelColor = ColorTools.makeRGBA(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha());
+					else {
+						// Select next available default color
+						channelColor = DEFAULT_COLORS.get(c % DEFAULT_COLORS.size());
+						// Darken colors if we've already cycled through all our defaults
+						if (c > DEFAULT_COLORS.size()) {
+							int scale = c / DEFAULT_COLORS.size();
+							channelColor = ColorTools.makeScaledRGB(channelColor, Math.pow(0.85, scale));
+						}
+					}
+					channels.add(new Channel(channelName, channelColor));
+				}
+				// Update RGB status if needed - sometimes we might really have an RGB image, but the Bio-Formats flag doesn't show this - 
+				// and we want to take advantage of the optimizations where we can
+				if (nChannels == 3 && 
+						bpp == 8 &&
+						(channels.get(0).color == Integer.valueOf(ColorTools.makeRGB(255, 0, 0))) &&
+						(channels.get(1).color == Integer.valueOf(ColorTools.makeRGB(0, 255, 0))) &&
+						(channels.get(2).color == Integer.valueOf(ColorTools.makeRGB(0, 0, 255)))
+						)
+					isRGB = true;
 			}
 			
-	
-			Integer[] colorArray = null;
-			int resLevel0 = -1;
-			for (int i = 0; i < nResolutions; i++) {
-				
+			// Try parsing pixel sizes in micrometers
+		    try {
+		    	Length xSize = meta.getPixelsPhysicalSizeX(series);
+		    	Length ySize = meta.getPixelsPhysicalSizeY(series);
+		    	if (xSize != null && ySize != null) {
+		    		pixelWidth = xSize.value(UNITS.MICROMETER).doubleValue();
+		    		pixelHeight = ySize.value(UNITS.MICROMETER).doubleValue();
+		    	} else {
+		    		pixelWidth = Double.NaN;
+		    		pixelHeight = Double.NaN;			    		
+		    	}
+		    	// If we have multiple z-slices, parse the spacing
+				if (nZSlices > 1) {
+			    	Length zSize = meta.getPixelsPhysicalSizeZ(series);
+			    	if (zSize != null)
+			    		zSpacing = zSize.value(UNITS.MICROMETER).doubleValue();
+			    	else
+			    		zSpacing = Double.NaN;
+			    }
+			    // TODO: Check the Bioformats TimeStamps
+			    if (nTimepoints > 1) {
+				    logger.warn("Time stamps read from Bioformats have not been fully verified & should not be relied upon");
+				    // Here, we don't try to separate timings by z-slice & channel...
+				    int lastTimepoint = -1;
+				    int count = 0;
+				    timePoints = new double[nTimepoints];
+				    logger.debug("PLANE COUNT: " + meta.getPlaneCount(series));
+				    for (int plane = 0; plane < meta.getPlaneCount(series); plane++) {
+				    	int timePoint = meta.getPlaneTheT(series, plane).getValue();
+				    	logger.debug("Checking " + timePoint);
+				    	if (timePoint != lastTimepoint) {
+				    		timePoints[count] = meta.getPlaneDeltaT(series, plane).value(UNITS.SECOND).doubleValue();
+				    		logger.debug(String.format("Timepoint %d: %.3f seconds", count, timePoints[count]));
+				    		lastTimepoint = timePoint;
+				    		count++;
+				    	}
+				    }
+				    timeUnit = TimeUnit.SECONDS;
+			    }
+		    } catch (Exception e) {
+		    	logger.error("Error parsing metadata", e);
+		    	pixelWidth = Double.NaN;
+		    	pixelHeight = Double.NaN;
+		    	zSpacing = Double.NaN;
+		    	timePoints = null;
+		    	timeUnit = null;
+		    }
+		    
+			// Loop through the series & determine downsamples
+			int nResolutions = reader.getResolutionCount();
+			downsamples = new double[nResolutions];
+			downsamples[0] = 1.0;
+			for (int i = 1; i < nResolutions; i++) {
 				reader.setResolution(i);
-	//			logger.debug("Series: " + series + ", Core Index: " + coreIndex);
-				
 				int w = reader.getSizeX();
 				int h = reader.getSizeY();
-				// Store the width, height & thumbnail channels if it is potentially the main image
-				if (w > width && h > height) {
-					width = w;
-					height = h;
-					resLevel0 = i;
-					tileWidth = reader.getOptimalTileWidth();
-					tileHeight = reader.getOptimalTileHeight();
-					nChannels = reader.getSizeC();
-					if (colorArray == null)
-						colorArray = new Integer[nChannels];
-					else if (nChannels > colorArray.length)
-						colorArray = Arrays.copyOf(colorArray, nChannels);
-					nZSlices = reader.getSizeZ();
-					if (options.requestChannelZCorrectionVSI() && nZSlices == nChannels && nChannels > 1 && "CellSens VSI".equals(format)) {
-						doChannelZCorrectionVSI = true;
-						nZSlices = 1;
-					}
-					nTimepoints = reader.getSizeT();
-					bpp = reader.getBitsPerPixel();
-					isRGB = reader.isRGB() && bpp == 8 && nChannels == 3;
-					
-					// Try to read the default display colors for each channel from the file
-					if (!isRGB) {
-						for (int c = 0; c < nChannels; c++) {
-							ome.xml.model.primitives.Color color = null;
-							try {
-								color = meta.getChannelColor(series, c);
-							} catch (Exception e) {
-								logger.warn("Unable to parse color", e);
-							}
-							if (color != null)
-								colorArray[c] = ColorTools.makeRGBA(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha());
-						}
-						// Update RGB status if needed - sometimes we might really have an RGB image, but the Bio-Formats flag doesn't show this - 
-						// and we want to take advantage of the optimizations where we can
-						if (nChannels == 3 && 
-								bpp == 8 &&
-								colorArray[0] == ColorTools.makeRGB(255, 0, 0) &&
-								colorArray[1] == ColorTools.makeRGB(0, 255, 0) &&
-								colorArray[2] == ColorTools.makeRGB(0, 0, 255)
-								)
-							isRGB = true;
-					}
-					
-					// Try parsing pixel sizes in micrometers
-				    try {
-					    	Unit<Length> micrometers = UNITS.MICROMETER;
-					    	Length xSize = meta.getPixelsPhysicalSizeX(series);
-					    	Length ySize = meta.getPixelsPhysicalSizeY(series);
-					    	if (xSize != null && ySize != null) {
-					    		pixelWidth = xSize.value(micrometers).doubleValue();
-					    		pixelHeight = ySize.value(micrometers).doubleValue();
-					    	} else {
-					    		pixelWidth = Double.NaN;
-					    		pixelHeight = Double.NaN;			    		
-					    	}
-						if (nZSlices > 1) {
-						    	Length z = meta.getPixelsPhysicalSizeZ(i);
-						    	if (z != null)
-						    		zSpacing = z.value(micrometers).doubleValue();
-						    	else
-						    		zSpacing = Double.NaN;
-						    }
-						    // TODO: Check the Bioformats TimeStamps
-						    if (nTimepoints > 1) {
-							    logger.warn("Time stamps read from Bioformats have not been fully verified & should not be relied upon");
-							    // Here, we don't try to separate timings by z-slice & channel...
-							    int lastTimepoint = -1;
-							    int count = 0;
-							    timePoints = new double[nTimepoints];
-							    logger.debug("PLANE COUNT: " + meta.getPlaneCount(series));
-							    for (int plane = 0; plane < meta.getPlaneCount(series); plane++) {
-							    	int timePoint = meta.getPlaneTheT(series, plane).getValue();
-							    	logger.debug("Checking " + timePoint);
-							    	if (timePoint != lastTimepoint) {
-							    		timePoints[count] = meta.getPlaneDeltaT(series, plane).value().doubleValue();
-							    		logger.debug(String.format("Timepoint %d: %.3f seconds", count, timePoints[count]));
-							    		lastTimepoint = timePoint;
-							    		count++;
-							    	}
-							    }
-							    timeUnit = TimeUnit.SECONDS;
-						    }
-				    } catch (Exception e) {
-					    	logger.error("Error parsing metadata", e);
-					    	pixelWidth = Double.NaN;
-					    	pixelHeight = Double.NaN;
-					    	zSpacing = Double.NaN;
-					    	timePoints = null;
-					    	timeUnit = null;
-				    }
-	
-				}
-				resWidths[i] = w;
-				resHeights[i] = h;
-			}
-			
-			if (resLevel0 < 0)
-				throw new FormatException("Unable to find valid full-resolution image within " + path);
-			
-			// Loop through the series again & determine downsamples
-			downsamples = new double[nResolutions];
-			for (int i = 0; i < nResolutions; i++) {
-				int w = resWidths[i];
-				int h = resHeights[i];
 				double downsampleX = (double)width / w;
 				double downsampleY = (double)height / h;
-				reader.setResolution(i);
-				int sizeC = reader.getSizeC();
-				double log2 = Math.log(2.0);
-				boolean showWarning = true;
-				if (GeneralTools.almostTheSame(downsampleX, downsampleY, 0.001) && sizeC == nChannels) {
-					// If our downsample values are very close, average them
-					downsamples[i] = (downsampleX + downsampleY) / 2;
-					showWarning = false;
-				}
-	//				downsamples[i] = Math.round((downsampleX + downsampleY) / 2);
-				else if (Math.round(downsampleX) == Math.round(downsampleY) && Math.abs(downsampleX - Math.round(downsampleX)) < 0.1 && sizeC == nChannels) {
-					// If our downsample values are both close to (the same) integer, use that
-					downsamples[i] = Math.round(downsampleX);
+				boolean showWarning = false;
+				
+				// Confirm that the resolutions are being returned in order
+				assert downsampleX >= 1 && downsampleY >= 1;
+				
+				/*
+				 * Determining the downsamples from VSI files has proven troublesome, but they *appear* 
+				 * to always be a power of two.  So we make that assumption here until it's proven wrong...
+				 */
+				if ("CellSens VSI".equals(format)) {
+					downsamples[i] = Math.pow(2, i);
 				} else {
-					// Check if downsample was aiming to be close to a power of 2...
-					// (This helps particularly with VSI... the true value is likely a power of 2?)
-					double downsampleXlog2 = Math.log(downsampleX)/log2;
-					double downsampleYlog2 = Math.log(downsampleY)/log2;
-					if (Math.round(downsampleXlog2) == Math.round(downsampleYlog2)
-							&& Math.abs(downsampleXlog2 - Math.round(downsampleXlog2)) < 0.1
-							&& Math.abs(downsampleYlog2 - Math.round(downsampleYlog2)) < 0.1
-							&& sizeC == nChannels) {
-					} else {
-						downsamples[i] = Double.NaN;
+					
+					// If the difference is less than 1 pixel from what we'd get by downsampling by closest integer, 
+					// adjust the downsample factors - we're probably aiming at integer downsampling
+					logger.debug("Computed downsample level {} x: {}, rounded pixel difference: {}", i, downsampleX, (width / (double)Math.round(downsampleX)  - w));
+					logger.debug("Computed downsample level {} y: {}, rounded pixel difference: {}", i, downsampleY, (height / (double)Math.round(downsampleY) - h));
+					boolean xPow2 = false;
+					boolean yPow2 = false;
+					if (Math.abs(width / (double)Math.round(downsampleX)  - w) <= 1) {
+						downsampleX = Math.round(downsampleX);
+						xPow2 = Integer.bitCount((int)downsampleX) == 1;
 					}
+					if (Math.abs(height / (double)Math.round(downsampleY) - h) <= 1) {
+						downsampleY = Math.round(downsampleY);	
+						yPow2 = Integer.bitCount((int)downsampleY) == 1;
+					}
+					// If one of these is a power of two, use it - this is usually the case
+					if (xPow2)
+						downsampleY = downsampleX;
+					else if (yPow2)
+						downsampleX = downsampleY;
+					
+					/*
+					 * Average the calculated downsamples for x & y, warning if they are substantially different.
+					 * 
+					 * The 'right' way to do this is a bit unclear... 
+					 * * OpenSlide also seems to use averaging: https://github.com/openslide/openslide/blob/7b99a8604f38280d14a34db6bda7a916563f96e1/src/openslide.c#L272
+					 * * OMERO's rendering may use the 'lower' ratio: https://github.com/openmicroscopy/openmicroscopy/blob/v5.4.6/components/insight/SRC/org/openmicroscopy/shoola/env/rnd/data/ResolutionLevel.java#L96
+					 * 
+					 * However, because in the majority of cases the rounding checks above will have resolved discrepancies, it is less critical.
+					 */
+					// Average the calculated downsamples for x & y, warning if they are substantially different
+					downsamples[i] = (downsampleX + downsampleY) / 2;
+					showWarning = !GeneralTools.almostTheSame(downsampleX, downsampleY, 0.001);
 				}
 				if (showWarning)
 					logger.warn("Calculated downsample values for series {} differ at resolution {}: x={} and y={} - will use value {}", series, i, downsampleX, downsampleY, downsamples[i]);
 			}
 			
-			// Check the tile size is potentially ok
-			if (tileWidth < 32 && tileWidth > 4096)
-				tileWidth = -1;		
-			if (tileHeight < 32 && tileHeight > 4096)
-				tileHeight = -1;
+//			// Estimate the image size from the lowest resolution of the pyramid; if it's substantially smaller, 
+//			// this implies pixels would be missing at the lowest levels, which can result in strange behavior.
+//			// In this case, use the truncated image dimensions instead.
+//			int width2 = (int)Math.min(width, Math.ceil(reader.getSizeX() * downsamples[nResolutions-1]));
+//			int height2 = (int)Math.min(height, Math.ceil(reader.getSizeY() * downsamples[nResolutions-1]));
+//			if ((width - width2 > downsamples[nResolutions-1]) || (height - height2 > downsamples[nResolutions-1])) {
+//				logger.error("Original image size ({} x {}) is not compatible with the predicted size from lower pyramid levels - will adapt to {} x {} instead", width, height, width2, height2);
+//				width = width2;
+//				height = height2;
+//			}
 			
 			// Set metadata
 			ImageServerMetadata.Builder builder = new ImageServerMetadata.Builder(this.path, width, height).
@@ -470,33 +531,21 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 					setZSpacingMicrons(zSpacing).
 					setMagnification(magnification).
 					setTimeUnit(timeUnit);
-			if (tileWidth > 0 && tileHeight > 0)
+			
+			// Check the tile size if it is reasonable
+			if (tileWidth >= MIN_TILE_SIZE && tileWidth <= MAX_TILE_SIZE && tileHeight >= MIN_TILE_SIZE && tileHeight <= MAX_TILE_SIZE)
 				builder.setPreferredTileSize(tileWidth, tileHeight);
 			originalMetadata = builder.build();
-			
-			// Set channel colors - need to wait until after metadata has been set to avoid NPE
-			channelColors.clear();
-			if (!isRGB) {
-				for (int c = 0; c < nChannels; c++) {
-					if (colorArray[c] == null)
-						channelColors.add(getExtendedDefaultChannelColor(c));
-					else
-						channelColors.add(colorArray[c]);
-				}
-			}
-			
 		}
 		
 		// Bioformats can use ImageIO for JPEG decoding, and permitting the disk-based cache can slow it down... so here we turn it off
 		// TODO: Document - or improve - the setting of ImageIO disk cache
 		ImageIO.setUseCache(false);
 		
-		
 		// No need to parallelize for single-channel images
 		parallelizeMultichannel = options.requestParallelizeMultichannel();
 		if (nChannels() == 1 || isRGB())
 			parallelizeMultichannel = false;
-		
 		
 		long endTime = System.currentTimeMillis();
 		logger.debug(String.format("Initialization time: %d ms", endTime-startTime));
@@ -554,6 +603,14 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		}
 	}
 	
+	BufferedImageReader getPrimaryReader() throws DependencyException, ServiceException, FormatException, IOException {
+		return manager.getPrimaryReader(this, this.filePath);
+	}
+	
+	int getSeries() {
+		return series;
+	}
+	
 	
 	@Override
 	public PathImage<BufferedImage> readRegion(RegionRequest request) {
@@ -565,30 +622,15 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		int resolution = ServerTools.getClosestDownsampleIndex(getPreferredDownsamples(), request.getDownsample());
 		double downsampleFactor = request.getDownsample();
 		double downsampleForSeries = getPreferredDownsamples()[resolution];
-				
-		/*
-		 * For downsampled levels, Aperio .svs files appear to divide by 4, 32 etc. and floor (i.e. not round).
-		 * Consequently their downsample ratios are not round numbers.
-		 * The numbers reported in the metadata appear to be the mean of the width & height ratios for each level
-		 * (i.e. full_res_width / level width and full_res_height / level_height).
-		 * This can lead to values like 4.000112795792701... close to 4, but not quite there.
-		 * 
-		 * This is... troublesome, because it seems Bioformats BufferedImageReader can put some black borders
-		 * on image tiles when their coordinates are slightly off from the real TIFF tiles.
-		 * 
-		 * However by using ceil (rather than round) in the scaling below it seems to be ok.
-		 * Still, it is something to be wary of, and it may need revisiting - especially with other formats.
-		 * 
-		 */
 		
 		// Adjust coordinates if we are downsampling
 		Rectangle region2;
 		if (downsampleForSeries > 1) {
 			region2 = new Rectangle(
-					(int)Math.ceil(request.getX() / downsampleForSeries),
-					(int)Math.ceil(request.getY() / downsampleForSeries),
-					(int)Math.ceil(request.getWidth() / downsampleForSeries),
-					(int)Math.ceil(request.getHeight() / downsampleForSeries));
+					(int)Math.round(request.getX() / downsampleForSeries),
+					(int)Math.round(request.getY() / downsampleForSeries),
+					(int)Math.round(request.getWidth() / downsampleForSeries),
+					(int)Math.round(request.getHeight() / downsampleForSeries));
 		} else {
 			region2 = AwtTools.getBounds(request);
 		}
@@ -613,12 +655,18 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				region2.width = x2 >= ipReader.getSizeX() ? ipReader.getSizeX() - region2.x : x2 - region2.x;
 				region2.height = y2 >= ipReader.getSizeY() ? ipReader.getSizeY() - region2.y : y2 - region2.y;
 				
+				// Check if this is non-zero
+				if (region2.width == 0 || region2.height == 0) {
+					logger.warn("Unable to request pixels for region with downsampled size {} x {}, {}", region2.width, region2.height, request);
+					return null;
+				}
+				
 				// Determine the final required size - which may or may not be the same
 				int finalWidth, finalHeight;
 				boolean resizeRequired;
 				if (GeneralTools.almostTheSame(downsampleForSeries, downsampleFactor, 0.001)) {
-					finalWidth = request.getWidth();
-					finalHeight = request.getHeight();
+					finalWidth = region2.width;
+					finalHeight = region2.height;
 					resizeRequired = false;
 				} else {
 					finalWidth = (int)(request.getWidth() / downsampleFactor + .5);
@@ -630,8 +678,12 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				if (ipReader.isRGB() || nChannels() == 1) {
 					// Read the image - or at least the first channel
 					int ind = ipReader.getIndex(request.getZ(), 0, request.getT());
-					img = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
-					
+					img = null;
+					try {
+						img = ipReader.openImage(ind, region2.x, region2.y, region2.width, region2.height);
+					} catch (Exception e) {
+						logger.error("Error opening image " + ind + " for region " + region2, e);
+					}
 					// Resize if we need to
 					if (resizeRequired)
 						img = resize(img, finalWidth, finalHeight, ipReader.isRGB());
@@ -723,12 +775,12 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		if (type == BufferedImage.TYPE_CUSTOM) {
 			int transferType = imgFirst.getRaster().getTransferType();
 			switch (transferType) {
-			case DataBuffer.TYPE_BYTE:
-				type = BufferedImage.TYPE_BYTE_GRAY;
-				break;
-			case DataBuffer.TYPE_USHORT:
-				type = BufferedImage.TYPE_USHORT_GRAY;
-				break;
+				case DataBuffer.TYPE_BYTE:
+					type = BufferedImage.TYPE_BYTE_GRAY;
+					break;
+				case DataBuffer.TYPE_USHORT:
+					type = BufferedImage.TYPE_USHORT_GRAY;
+					break;
 			}
 		}
 		
@@ -736,7 +788,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		int[] bandIndices;
 		switch (type) {
 			case (BufferedImage.TYPE_BYTE_INDEXED):
-				logger.warn("Merging {} images, with TYPE_BYTE_INDEXED", images.length);
+				logger.debug("Merging {} images, with TYPE_BYTE_INDEXED", images.length);
 			case (BufferedImage.TYPE_BYTE_GRAY):
 				byte[][] bytes = new byte[images.length][];
 				bandIndices = new int[images.length];
@@ -764,6 +816,22 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				raster = WritableRaster.createBandedRaster(
 						new DataBufferUShort(shorts, w*h), w, h, w,bandIndices, new int[images.length], null);
 				return new BufferedImage(new DummyColorModel(16*images.length), raster, false, null);
+			case (BufferedImage.TYPE_CUSTOM):
+				if (imgFirst.getRaster().getTransferType() == DataBuffer.TYPE_FLOAT) {
+					BandedSampleModel sampleModel = new BandedSampleModel(DataBuffer.TYPE_FLOAT, w, h, images.length);
+					raster = WritableRaster.createWritableRaster(sampleModel, null);
+					float[] floats = null;
+					bandIndices = new int[images.length];
+					for (int b = 0; b < images.length; b++) {
+						bandIndices[b] = b;
+						DataBuffer bandBuffer = images[b].getRaster().getDataBuffer();
+						if (!(bandBuffer instanceof DataBufferFloat))
+							throw new IllegalArgumentException("Invalid DataBuffer - expected DataBufferFloat, but got " + bandBuffer);
+						floats = ((DataBufferFloat)bandBuffer).getData();
+						raster.setSamples(0, 0, w, h, b, floats);
+					}
+					return new BufferedImage(new DummyColorModel(32*images.length), raster, false, null);
+				}
 			default:
 				throw new IllegalArgumentException("Only 8-bit or 16-bit unsigned integer images can be merged!");
 		}
@@ -847,13 +915,13 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		manager.closeServer(this);
 	}
 	
-	@Override
-	public BufferedImage getBufferedThumbnail(int maxWidth, int maxHeight, int zPosition) {
-		BufferedImage img = super.getBufferedThumbnail(maxWidth, maxHeight, zPosition);
-		if (isRGB())
-			return img;
-		return AWTImageTools.autoscale(img);
-	}
+//	@Override
+//	public BufferedImage getBufferedThumbnail(int maxWidth, int maxHeight, int zPosition) {
+//		BufferedImage img = super.getBufferedThumbnail(maxWidth, maxHeight, zPosition);
+//		if (isRGB())
+//			return img;
+//		return AWTImageTools.autoscale(img);
+//	}
 	
 	@Override
 	public double getTimePoint(int ind) {
@@ -891,14 +959,50 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		return bpp;
 	}
 	
+	/**
+	 * Get the stored name for this channel.
+	 * <p>
+	 * Note that the input used base-0 indexing, although the output may be 
+	 * "Channel 1", "Channel 2" etc. for more user-friendly readability.
+	 * 
+	 * @param channel
+	 * @return
+	 */
+	public String getChannelName(int channel) {
+		String name = channels.get(channel).name;
+		if (name == null)
+			return "Channel " + (channel + 1);
+		return name;
+	}
+
+	MetadataStore getMetadataStore() throws DependencyException, ServiceException, FormatException, IOException {
+		BufferedImageReader reader = manager.getPrimaryReader(this, filePath);
+		return reader.getMetadataStore();
+	}
+	
+	/**
+	 * Retrieve a string representation of the metadata OME-XML.
+	 * 
+	 * @return
+	 */
+	public String dumpMetadata() {
+		try {
+			OMEXMLMetadata metadata = (OMEXMLMetadata)getMetadataStore();
+			return metadata.dumpXML();
+		} catch (Exception e) {
+			logger.error("Unable to dump metadata", e);
+		}
+		return null;
+	}
+	
 	
 	@Override
 	public Integer getDefaultChannelColor(int channel) {
 		if (isRGB)
 			return getDefaultRGBChannelColors(channel);
 		Integer color = null;
-		if (channel >= 0 && channel <= channelColors.size())
-			 color = channelColors.get(channel);
+		if (channel >= 0 && channel <= channels.size())
+			 color = channels.get(channel).color;
 		if (color == null)
 			color = getExtendedDefaultChannelColor(channel);
 		return color;
@@ -920,12 +1024,14 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			int series = reader.getSeries();
 			try {
 				reader.setSeries(associatedImageMap.get(name));
-				if (reader.getResolutionCount() > 0) {
+				int nResolutions = reader.getResolutionCount();
+				if (nResolutions > 0) {
 					reader.setResolution(0);
 				}
 				// TODO: Handle color transforms here, or in the display of labels/macro images - in case this isn't RGB
 				BufferedImage img = reader.openImage(reader.getIndex(0, 0, 0), 0, 0, reader.getSizeX(), reader.getSizeY());
 				return img;
+//				return AWTImageTools.autoscale(img);
 			} catch (Exception e) {
 				logger.error("Error reading associated image" + name, e);
 			} finally {
@@ -967,7 +1073,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 	@Override
 	public void setMetadata(ImageServerMetadata metadata) {
 		if (!originalMetadata.isCompatibleMetadata(metadata))
-			throw new RuntimeException("Specified metadata is incompatible with original metadata for " + this);
+			throw new IllegalArgumentException("Specified metadata is incompatible with original metadata for " + this);
 		userMetadata = metadata;
 	}
 	
@@ -1026,7 +1132,10 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				}
 				return reader;
 			}
+//			long startTime = System.currentTimeMillis();
 			reader = createReader(server.options, path, null);
+//			long endTime = System.currentTimeMillis();
+//			System.err.println("Initialization " + (endTime - startTime));
 			mapReadersPerThread.put(Thread.currentThread(), reader);
 			return reader;
 		}
@@ -1054,9 +1163,7 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 			// Create a reader if we need to
 			if (reader == null) {
 				// Create OME-XML metadata store
-			    ServiceFactory factory = new ServiceFactory();
-			    OMEXMLService service = factory.getInstance(OMEXMLService.class);
-			    IMetadata meta = service.createOMEXMLMetadata();
+			    IMetadata meta = MetadataTools.createOMEXMLMetadata();
 				reader = createReader(server.options, path, meta);
 				mapPrimary.put(path, reader);
 			} else {
@@ -1184,14 +1291,26 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 				imageReader = memoizer;
 			}
 			
-			if (store != null)
+			if (store != null) {
 				imageReader.setMetadataStore(store);
+			}
+			else
+				imageReader.setMetadataStore(new DummyMetadata());
 			
 			if (id != null) {
 				if (memoizer != null) {
 					File fileMemo = ((Memoizer)imageReader).getMemoFile(id);
 					boolean memoFileExists = fileMemo.exists();
-					imageReader.setId(id);
+					try {
+						imageReader.setId(id);
+					} catch (Exception e) {
+						if (memoFileExists) {
+							logger.warn("Problem with memoization file {} ({}), will delete", fileMemo.getName(), e.getLocalizedMessage());
+							fileMemo.delete();
+						}
+						imageReader.close();
+						imageReader.setId(id);
+					}
 					memoizationFileSize = fileMemo == null ? 0L : fileMemo.length();
 					if (memoizationFileSize == 0L)
 						logger.info("No memoization file generated for {}", id);
@@ -1209,6 +1328,18 @@ public class BioFormatsImageServer extends AbstractImageServer<BufferedImage> {
 		
 	}
 	
+	
+	static class Channel {
+		
+		private final String name;
+		private final Integer color;
+		
+		Channel(final String name, final Integer color) {
+			this.name = name;
+			this.color = color;
+		}
+		
+	}
 	
 	
 	/**

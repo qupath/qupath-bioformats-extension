@@ -31,6 +31,9 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import loci.formats.FormatTools;
+import qupath.lib.images.servers.ImageServer;
+import qupath.lib.images.servers.ImageServerBuilder;
 import qupath.lib.images.servers.BioFormatsServerOptions.UseBioformats;
 import qupath.lib.images.servers.FileFormatInfo.ImageCheckType;
 
@@ -107,7 +110,7 @@ public class BioFormatsServerBuilder implements ImageServerBuilder<BufferedImage
 
 	@Override
 	public String getDescription() {
-		return "Image server using the Bio-Formats library";
+		return "Image server using the Bio-Formats library (" + FormatTools.VERSION + ")";
 	}
 	
 	

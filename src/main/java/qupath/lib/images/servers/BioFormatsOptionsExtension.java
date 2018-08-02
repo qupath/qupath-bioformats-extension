@@ -28,9 +28,13 @@ import java.util.Collection;
 import java.util.List;
 import java.util.StringTokenizer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.IntegerProperty;
 import javafx.beans.property.StringProperty;
+import loci.formats.FormatTools;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.extensions.QuPathExtension;
 import qupath.lib.gui.panels.PreferencePanel;
@@ -42,9 +46,13 @@ import qupath.lib.gui.prefs.PathPrefs;
  * @author Pete Bankhead
  */
 public class BioFormatsOptionsExtension implements QuPathExtension {
+	
+	private final static Logger logger = LoggerFactory.getLogger(BioFormatsOptionsExtension.class);
 
 	@Override
 	public void installExtension(QuPathGUI qupath) {
+		
+		logger.info("Bio-Formats version " + FormatTools.VERSION);
 		
 		BioFormatsServerOptions options = BioFormatsServerOptions.getInstance();
 		
@@ -114,7 +122,7 @@ public class BioFormatsOptionsExtension implements QuPathExtension {
 
 	@Override
 	public String getName() {
-		return "Bio-Formats server options";
+		return "Bio-Formats server options (Bio-Formats " + FormatTools.VERSION + ")";
 	}
 
 	@Override
