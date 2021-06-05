@@ -1,3 +1,5 @@
+**This was written for QuPath v0.1.2. It is no longer maintained and is not compatible with more recent QuPath versions.**
+
 QuPath Bio-Formats Extension
 ============================
 
